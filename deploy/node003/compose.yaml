@@ -104,6 +104,35 @@ services:
     depends_on:
       nats: {condition: service_healthy}
 
+  mcp:
+    <<: *hardening
+    build:
+      context: ../..
+      dockerfile: services/mcp/Dockerfile
+      target: runtime
+    image: kmb-mcp:latest
+    container_name: kmb-mcp
+    command: ["-m", "kmb.mcp", "http"]
+    cpus: 0.5
+    mem_limit: 256m
+    environment:
+      KMB_MCP_BACKEND_URL: http://backend:8800
+      KMB_MCP_PUBLIC_URL: ${KMB_MCP_PUBLIC_URL:-https://node003:8801}
+      KMB_MCP_TLS_CERT_FILE: /run/secrets/mcp_tls_cert
+      KMB_MCP_TLS_KEY_FILE: /run/secrets/mcp_tls_key
+      # Server-held research token: clients connect without credentials (single-user setup).
+      KMB_MCP_TOKEN_FILE: /run/secrets/mcp_research_token
+    secrets: [mcp_tls_cert, mcp_tls_key, mcp_research_token]
+    ports: ["192.168.1.181:8801:8801"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import ssl, urllib.request; urllib.request.urlopen('https://node003:8801/health', context=ssl.create_default_context(cafile='/run/secrets/mcp_tls_cert'), timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    depends_on:
+      backend: {condition: service_healthy}
+
   # Long-running paper/live jobs (one job per worker; live jobs also hold a Kalshi key lease).
   # Scale with KMB_TRADE_WORKERS as more Kalshi API keys / users are added.
   worker-trade:
@@ -152,3 +181,9 @@ secrets:
     file: ${KMB_SECRETS_DIR:-/etc/kmb/secrets}/vault_key
   kalshi_private_key:
     file: ${KMB_SECRETS_DIR:-/etc/kmb/secrets}/kalshi_private_key.pem
+  mcp_tls_cert:
+    file: ${KMB_SECRETS_DIR:-/etc/kmb/secrets}/mcp_tls_cert.pem
+  mcp_tls_key:
+    file: ${KMB_SECRETS_DIR:-/etc/kmb/secrets}/mcp_tls_key.pem
+  mcp_research_token:
+    file: ${KMB_SECRETS_DIR:-/etc/kmb/secrets}/mcp_research_token

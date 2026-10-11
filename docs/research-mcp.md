@@ -1,8 +1,53 @@
 # Agent scalping research
 
-The local stdio MCP server (`python -m kmb.mcp`) is a research workbench over
+The MCP server is a research workbench over
 `/api/research` on the existing backend. Existing simulation/trade workers execute
 jobs; the MCP process does not run a second exchange or access the database.
+The deployed `mcp` service on node003 serves Streamable HTTP at
+`https://node003:8801/mcp`. Local stdio (`python -m kmb.mcp`) remains available.
+
+## Deployed HTTPS setup (recommended)
+
+1. On node003, run `sudo bash deploy/node003/setup-mcp-tls.sh` once. It creates
+   a private local CA and a one-year node003 certificate under `/etc/kmb/secrets`.
+   It refuses to overwrite existing certificates. Never copy the CA or server
+   private keys to clients. Renew the server certificate before expiry, keeping
+   the same CA and DNS/IP subject alternative names.
+2. Deploy through Jenkins, or run `docker compose --env-file /etc/kmb/node003.env build mcp` and
+   `docker compose --env-file /etc/kmb/node003.env up -d --no-build mcp`
+   from `deploy/node003`. The service has no database, vault or Kalshi secrets.
+   It holds one research token in `/etc/kmb/secrets/mcp_research_token`
+   (owner 1000, mode 0400) and uses it for every backend call, so clients connect
+   without credentials. Anyone who can reach port 8801 gets that token's research
+   access. Create the token on the **Agent research** page; it expires after at most
+   90 days. To rotate it, replace the file and restart `mcp`. Revoking it on the
+   **Agent research** page cuts off all clients at once. If `KMB_MCP_TOKEN_FILE` is
+   unset, the service instead requires each client to send its own bearer token.
+3. Copy only `/etc/kmb/secrets/mcp_ca_cert.pem` to a private workstation directory,
+   verify its SHA-256 fingerprint against node003 over SSH, and trust it in the
+   current Windows user's certificate store:
+   `Import-Certificate -FilePath C:\Users\luis0\.kmb\mcp_ca_cert.pem -CertStoreLocation Cert:\CurrentUser\Root`.
+   Restart VS Code after changing certificate trust. Do not disable TLS verification.
+4. In VS Code's MCP configuration, use the HTTP server below. No token or
+   prompt is needed.
+
+```json
+{
+  "servers": {
+    "kalshi-research": {
+      "type": "http",
+      "url": "https://node003:8801/mcp"
+    }
+  }
+}
+```
+
+Use `research_capabilities` to verify access. The open `/health` endpoint checks
+the MCP process, not backend or worker readiness. No local Python process or SSH
+tunnel is required for this HTTPS configuration. `KMB_MCP_PUBLIC_URL` must be
+an HTTPS origin; its exact host/port and origin are allowed for DNS-rebinding
+protection. Certificates and the Compose health check must match the deployment
+hostname if changing it from node003.
 
 ## Permissions
 
@@ -21,7 +66,7 @@ Treat the browser account as human-only. Do not give agents its password, sessio
 cookie, CSRF token, admin access, or a generic authenticated browser alongside
 the research token; doing so would defeat the separation.
 
-## Setup
+## Optional local stdio setup
 
 1. Deploy the updated backend/UI and workers using the existing Jenkins workflow.
    Startup adds four research tables through the existing `init_db`/`create_all`
@@ -79,7 +124,7 @@ configuration; the token itself must not appear in this file):
 }
 ```
 
-This server opens no listening port and needs no additional container.
+The optional stdio server opens no listening port and needs no additional container.
 Use `research_capabilities` to verify the connection and discover strategy schemas.
 If a token expires or is revoked, replace its file and restart the MCP connection.
 Errors such as missing recordings, denied permissions and exceeded budgets are

@@ -7,6 +7,7 @@ node003 (192.168.1.181, Pi with 4 cores and 8 GB RAM) runs the live side:
 | `nats` | Market-data bus. JetStream stream `MD` (`md.>`) is in memory only (1 h / 256 MB). | internal |
 | `collector` | Kalshi REST/WS + Coinbase capture. Spools to `/var/lib/kmb-collector`, uploads to node001 ingest, publishes to NATS. | 8710 (`/health`, `/ready`, `/status`) |
 | `backend` | FastAPI API + the built UI, served from the same origin. Creates/updates the Postgres schema on start. | 8800 |
+| `mcp` | HTTPS Streamable HTTP research tools. Clients connect without credentials; the service uses the server-held research token in `mcp_research_token`. | 8801 (`/mcp`, `/health`) |
 | `worker-trade` | Paper and live jobs, which run until stopped. One job per container. Scale with `KMB_TRADE_WORKERS` (default 2). | – |
 | `worker-sim` | Replays of recorded windows (sim) and G4 calibration jobs. Scale with `KMB_SIM_WORKERS` (default 1). | – |
 
@@ -66,7 +67,12 @@ Postgres, ingest and the data API live on node001, which must be deployed first
    (`production`|`demo`), `KMB_TRADE_WORKERS`, `KMB_SIM_WORKERS`, `KMB_DB_HOST`, `KMB_DATA_API_URL`,
    `KMB_INGEST_URL`, `KMB_BACKEND_COOKIE_SECURE` (set `1` only behind HTTPS).
 
-5. First deploy (same script Jenkins runs), then create the first admin account:
+5. Provision MCP HTTPS once with `sudo bash deploy/node003/setup-mcp-tls.sh`.
+   Private keys stay on node003. Trust only the public CA on clients as described
+   in [../../docs/research-mcp.md](../../docs/research-mcp.md). Renew the one-year
+   server certificate using the same CA before expiry.
+
+6. First deploy (same script Jenkins runs), then create the first admin account:
 
    ```bash
    cd ~/kalshi-momentum-bot/deploy/node003
@@ -88,9 +94,9 @@ stops running paper/live jobs.
 ## Agent research
 
 The backend/UI also serves **Agent research** for scoped MCP tokens, experiment
-results and human-only paper approvals. MCP runs on the agent workstation over
-stdio and reaches this backend through HTTPS or a localhost SSH tunnel; it needs
-no additional deployed service. See [../../docs/research-mcp.md](../../docs/research-mcp.md).
+results and human-only paper approvals. The deployed `mcp` service serves
+`https://node003:8801/mcp`; no local Python process or SSH tunnel is needed.
+Optional local stdio remains supported. See [../../docs/research-mcp.md](../../docs/research-mcp.md).
 Deploy the updated backend and workers together so source fingerprints match.
 Keep simulation workers enabled; approved paper jobs additionally need at least
 one paper-capable trade worker. Live trading can remain disabled.

@@ -34,6 +34,7 @@ tests/
 - **node001** (192.168.1.129): `ingest` :8701, Postgres :5432, `normalizer` (every 15 min),
   `data-api` :8702, nightly backup + replication. See [deploy/node001/README.md](deploy/node001/README.md).
 - **node003** (192.168.1.181): `collector` :8710, NATS (memory only), `backend` + UI :8800,
+  HTTPS research `mcp` :8801,
   `worker-trade` (paper/live) and `worker-sim` (sim/calibration) pools. See
   [deploy/node003/README.md](deploy/node003/README.md).
 - **Jenkins** (node002) runs the tests and deploys node001, then node003 ([Jenkinsfile](Jenkinsfile)).
@@ -46,7 +47,8 @@ and passes per-order risk limits.
 The **Agent research** page manages scoped MCP tokens, experiment evidence and
 human approval of bounded paper sessions. Agents can run autonomous simulation
 batches without accessing keys, trading bots, administration or live trading.
-The local stdio server is `python -m kmb.mcp`; see
+The deployed HTTPS MCP endpoint is `https://node003:8801/mcp`; optional local
+stdio is `python -m kmb.mcp`. See
 [docs/research-mcp.md](docs/research-mcp.md) for setup, permissions, tools and the
 training/held-out validation workflow.
 

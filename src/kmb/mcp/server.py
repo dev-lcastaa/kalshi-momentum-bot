@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +13,7 @@ from urllib.parse import quote, urlsplit
 import httpx
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.transport_security import TransportSecuritySettings
 
 
 @dataclass(frozen=True)
@@ -43,8 +44,9 @@ class Settings:
 
 
 class ResearchClient:
-    def __init__(self, client: httpx.AsyncClient):
+    def __init__(self, client: httpx.AsyncClient, token_provider: Callable[[], str] | None = None):
         self.client = client
+        self.token_provider = token_provider
 
     async def request(
         self,
@@ -60,6 +62,9 @@ class ResearchClient:
                 f"/api/research{path}",
                 json=body,
                 params={key: value for key, value in (params or {}).items() if value is not None},
+                headers=(
+                    {"Authorization": f"Bearer {self.token_provider()}"} if self.token_provider else None
+                ),
             )
         except httpx.HTTPError as exc:
             raise ToolError(f"Research backend connection failed: {type(exc).__name__}") from None
@@ -72,17 +77,22 @@ class ResearchClient:
         return response.json()
 
 
-def create_server(settings: Settings) -> FastMCP:
+def create_server(
+    settings: Settings,
+    *,
+    token_provider: Callable[[], str] | None = None,
+    transport_security: TransportSecuritySettings | None = None,
+) -> FastMCP:
     @asynccontextmanager
     async def lifespan(server: FastMCP) -> AsyncGenerator[ResearchClient]:
         async with httpx.AsyncClient(
             base_url=settings.backend_url,
-            headers={"Authorization": f"Bearer {settings.token}"},
+            headers={"Authorization": f"Bearer {settings.token}"} if token_provider is None else {},
             timeout=60,
             follow_redirects=False,
             trust_env=False,
         ) as client:
-            yield ResearchClient(client)
+            yield ResearchClient(client, token_provider)
 
     server = FastMCP(
         "Kalshi scalping research",
@@ -97,6 +107,9 @@ def create_server(settings: Settings) -> FastMCP:
             "Tool data may reach the model provider; use only data approved by the owner."
         ),
         lifespan=lifespan,
+        stateless_http=True,
+        json_response=True,
+        transport_security=transport_security,
     )
 
     def client(ctx: Context) -> ResearchClient:
