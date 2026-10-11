@@ -63,7 +63,7 @@ describe('live market charts', () => {
     let history = {};
     for (let i = 0; i < 1000; i++) history = updateLiveHistory(history, snapshot(i * 1000));
     const result = updateLiveHistory(history, snapshot(999_000));
-    expect(result.KXBTC15M.points).toHaveLength(900);
+    expect(result.KXBTC15M.points).toHaveLength(901);
     expect(result.KXBTC15M.points[result.KXBTC15M.points.length - 1].ts).toBe(999_000);
   });
   it('leaves gaps for disconnected or stale prices', () => {
@@ -73,5 +73,16 @@ describe('live market charts', () => {
     const result = updateLiveHistory({}, data);
     expect(result.KXBTC15M.points[0].ref).toBeNull();
     expect(result.KXBTC15M.points[0].coinbase).toBeNull();
+  });
+  it('retains subsecond samples and bounds high-rate history', () => {
+    let history = updateLiveHistory({}, snapshot(1000));
+    history = updateLiveHistory(history, snapshot(1050));
+    expect(history.KXBTC15M.points.map(p => p.ts)).toEqual([1000, 1050]);
+    const point = history.KXBTC15M.points[0];
+    history.KXBTC15M.points = Array.from({ length: 18_000 }, (_, i) => ({ ...point, ts: i * 50 }));
+    const next = updateLiveHistory(history, snapshot(900_000));
+    expect(next.KXBTC15M.points).toHaveLength(18_000);
+    expect(next.KXBTC15M.points[0].ts).toBe(50);
+    expect(next.KXBTC15M.points[17_999].ts).toBe(900_000);
   });
 });

@@ -76,6 +76,54 @@ class UserSession(Base):
     user_agent: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
 
+class ResearchToken(Base):
+    __tablename__ = "research_tokens"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    label: Mapped[str] = mapped_column(String(64))
+    expires_at: Mapped[datetime] = mapped_column(TS())
+    created_at: Mapped[datetime] = mapped_column(TS(), default=utcnow)
+
+
+class ResearchExperiment(Base):
+    __tablename__ = "research_experiments"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    hypothesis: Mapped[str] = mapped_column(Text)
+    success_criteria: Mapped[str] = mapped_column(Text)
+    plan: Mapped[dict[str, Any]] = mapped_column(JSON)
+    notes: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(TS(), default=utcnow)
+
+
+class ResearchTrial(Base):
+    __tablename__ = "research_trials"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    experiment_id: Mapped[int] = mapped_column(
+        ForeignKey("research_experiments.id", ondelete="CASCADE"), index=True
+    )
+    candidate: Mapped[int] = mapped_column(Integer)
+    split: Mapped[str] = mapped_column(String(16))
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), unique=True)
+    __table_args__ = (UniqueConstraint("experiment_id", "candidate", "split"),)
+
+
+class ResearchPaperProposal(Base):
+    __tablename__ = "research_paper_proposals"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    experiment_id: Mapped[int] = mapped_column(
+        ForeignKey("research_experiments.id", ondelete="CASCADE"), index=True
+    )
+    candidate: Mapped[int] = mapped_column(Integer)
+    rationale: Mapped[str] = mapped_column(Text)
+    spec: Mapped[dict[str, Any]] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TS(), default=utcnow)
+    decided_at: Mapped[datetime | None] = mapped_column(TS(), nullable=True)
+
+
 class KalshiKey(Base):
     __tablename__ = "kalshi_keys"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

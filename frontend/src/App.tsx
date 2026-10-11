@@ -6,6 +6,8 @@ import { api, type Bot, type Frame, type Job, type Overview, type User, type Win
 import { Icon, type IconName } from './Icon';
 import { APP_NAME, friendlyLabel, marketName, parameterHelp, recordingHelp, outcomeTone } from './language';
 import LiveMarkets from './LiveMarkets';
+import Research from './Research';
+import { useReplayMotion } from './priceMotion';
 const money = (value: unknown, digits = 2) => { if (value == null || value === '')
     return 'N/A'; const fixed = formatDecimal(String(value), digits); const [whole, fraction = ''] = fixed.split('.'); return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (digits ? '.' + fraction : ''); };
 const cents = (value: string | null | undefined) => formatCents(value);
@@ -110,14 +112,17 @@ function Windows() {
         <p className="page-note"><Icon name="shield" /> A replay shows the past, not a promise of future profit.</p>
     </>;
 }
-function Chart({ data, field, markers = [], strike, trades = [], onSeek }: {
+function Chart({ data, field, markers = [], strike, trades = [], onSeek, playhead }: {
     data: Overview['series'];
     field: 'contract' | 'ref';
     markers?: any[];
     strike?: number;
     trades?: Overview['trades'];
     onSeek?: (ts: number) => void;
-}) { const host = useRef<HTMLDivElement>(null), seek = useRef(onSeek), markerPlugin = useRef<any>(null); seek.current = onSeek; useEffect(() => { if (!host.current)
+    playhead?: number;
+}) { const host = useRef<HTMLDivElement>(null), seek = useRef(onSeek), markerPlugin = useRef<any>(null);
+const chartRef = useRef<ReturnType<typeof createChart> | null>(null), cursor = useRef<HTMLDivElement>(null);
+seek.current = onSeek; useEffect(() => { if (!host.current)
     return; const chart = createChart(host.current, { height: 245, layout: { background: { color: '#10171d' }, textColor: '#84949f' }, grid: { vertLines: { color: '#202c34' }, horzLines: { color: '#202c34' } }, rightPriceScale: { borderColor: '#26333c' }, timeScale: { borderColor: '#26333c', timeVisible: true }, crosshair: { vertLine: { color: '#56717f' }, horzLine: { color: '#56717f' } } }); const series: any[] = []; if (field === 'contract') {
     series.push([chart.addSeries(LineSeries, { color: '#58a9ff', lineWidth: 1, priceLineVisible: false }), 'yes_bid']);
     series.push([chart.addSeries(LineSeries, { color: '#ef8b80', lineWidth: 1, priceLineVisible: false }), 'yes_ask']);
@@ -126,15 +131,29 @@ function Chart({ data, field, markers = [], strike, trades = [], onSeek }: {
 else {
     series.push([chart.addSeries(LineSeries, { color: '#58a9ff', lineWidth: 2, priceLineVisible: false }), 'ref']);
     series.push([chart.addSeries(LineSeries, { color: '#efb15b', lineWidth: 1, priceLineVisible: false }), 'coinbase']);
-} for (const [line, key] of series) {
+} chartRef.current = chart; for (const [line, key] of series) {
     line.setData(data.filter(p => (p as any)[key] != null).map(p => ({ time: Math.floor(p.ts_ms / 1000) as Time, value: Number((p as any)[key]) })));
     if (key === 'mid')
         markerPlugin.current = createSeriesMarkers(line, []);
     if (key === 'ref' && strike !== undefined)
         line.createPriceLine({ price: strike, color: '#e6b95c', lineWidth: 1, lineStyle: 2, title: 'Target' });
 } chart.timeScale().fitContent(); chart.subscribeClick(p => { if (typeof p.time === 'number')
-    seek.current?.(p.time * 1000); }); const resize = new ResizeObserver(e => chart.applyOptions({ width: e[0].contentRect.width })); resize.observe(host.current); return () => { resize.disconnect(); chart.remove(); }; }, [data, field, strike]); useEffect(() => { if (field !== 'contract' || !markerPlugin.current)
-    return; const all = [...markers, ...(trades || []).map(t => ({ time: Math.floor(t.ts_ms / 1000), position: t.taker_side === 'yes' ? 'belowBar' : 'aboveBar', color: t.taker_side === 'yes' ? '#49d3a5' : '#ef786f', shape: t.taker_side === 'yes' ? 'arrowUp' : 'arrowDown', text: t.count }))].sort((a, b) => Number(a.time) - Number(b.time)); markerPlugin.current.setMarkers(all); }, [markers, trades, field]); return <div className="chart" ref={host}/>; }
+    seek.current?.(p.time * 1000); }); const resize = new ResizeObserver(e => chart.applyOptions({ width: e[0].contentRect.width })); resize.observe(host.current); return () => { resize.disconnect(); chartRef.current = null; chart.remove(); }; }, [data, field, strike]);
+useEffect(() => {
+    const chart = chartRef.current, element = cursor.current;
+    if (!chart || !element || playhead === undefined) return;
+    const update = () => {
+        const second = Math.floor(playhead / 1000), scale = chart.timeScale();
+        const left = scale.timeToCoordinate(second as Time), right = scale.timeToCoordinate((second + 1) as Time);
+        const x = left === null ? null : Number(left) + (right === null ? 0 : Number(right) - Number(left)) * (playhead / 1000 - second);
+        element.style.display = x === null ? 'none' : 'block';
+        if (x !== null) element.style.transform = `translateX(${x}px)`;
+    };
+    update(); chart.timeScale().subscribeVisibleLogicalRangeChange(update);
+    return () => chart.timeScale().unsubscribeVisibleLogicalRangeChange(update);
+}, [playhead, data, field, strike]);
+useEffect(() => { if (field !== 'contract' || !markerPlugin.current)
+    return; const all = [...markers, ...(trades || []).map(t => ({ time: Math.floor(t.ts_ms / 1000), position: t.taker_side === 'yes' ? 'belowBar' : 'aboveBar', color: t.taker_side === 'yes' ? '#49d3a5' : '#ef786f', shape: t.taker_side === 'yes' ? 'arrowUp' : 'arrowDown', text: t.count }))].sort((a, b) => Number(a.time) - Number(b.time)); markerPlugin.current.setMarkers(all); }, [markers, trades, field]); return <div className="replay-chart-wrap"><div className="chart" ref={host}/>{playhead !== undefined && <div className="replay-chart-cursor" ref={cursor} aria-hidden="true" />}</div>; }
 function DepthCanvas({ overview, playhead }: {
     overview: Overview;
     playhead: number;
@@ -146,7 +165,7 @@ function DepthCanvas({ overview, playhead }: {
         ctx.fillStyle = Number(price) < .5 ? `rgba(55,190,146,${intensity})` : `rgba(232,119,93,${intensity})`;
         ctx.fillRect(x, y, Math.max(2, w / Math.max(1, overview.depth.length)), 3);
     }
-} const x = (playhead - overview.start_ms) / span * w; ctx.strokeStyle = '#f3bd55'; ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }, [overview, playhead]); return <canvas className="heatmap" ref={ref}/>; }
+} }, [overview]); return <div className="replay-chart-wrap"><canvas className="heatmap" ref={ref}/><div className="replay-depth-cursor" aria-hidden="true" style={{ left: `${Math.max(0, Math.min(100, (playhead - overview.start_ms) / (overview.end_ms - overview.start_ms || 1) * 100))}%` }} /></div>; }
 function Replay() { const { windowId = '' } = useParams(), [overview, setOverview] = useState<Overview | null>(null), [frame, setFrame] = useState<Frame | null>(null), [events, setEvents] = useState<any[]>([]), [tape, setTape] = useState<any[]>([]), [playing, setPlaying] = useState(false), [speed, setSpeed] = useState(1), [error, setError] = useState(''); const socket = useRef<any>(null); const accept = (f: Frame) => { setFrame(f); setPlaying(f.playing); setSpeed(f.speed); if (f.trades?.length)
     setTape(old => { const all = [...f.trades, ...old]; return all.filter((t, i) => all.findIndex(x => x.ts_ms === t.ts_ms && x.price === t.price && x.taker_side === t.taker_side) === i).slice(0, 500); }); if (f.events?.length)
     setEvents(old => [...f.events, ...old].slice(0, 100)); }; useEffect(() => { let alive = true; api<Overview>(`/api/windows/${encodeURIComponent(windowId)}/overview`).then(v => { if (alive)
@@ -167,7 +186,9 @@ else {
     send(playing ? 'pause' : 'play');
 } if (e.key === 'ArrowLeft')
     send('step', { ms: -1000 }); if (e.key === 'ArrowRight')
-    send('step', { ms: 1000 }); }; window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key); }, [playing]); if (!overview)
+    send('step', { ms: 1000 }); }; window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key); }, [playing]);
+    const smoothTime = useReplayMotion(frame?.ts_ms ?? null, playing, speed, windowId);
+    if (!overview)
     return error ? <div className="error-box">{error}</div> : <Busy />;
     const now = frame?.ts_ms ?? overview.start_ms, book = frame?.book, bids = book?.yes_bids || [], asks = book?.yes_asks || [];
     const bid5 = bids.slice(0, 5).reduce((a, b) => a + Number(b[1]), 0), ask5 = asks.slice(0, 5).reduce((a, b) => a + Number(b[1]), 0);
@@ -182,16 +203,16 @@ else {
         <div className="replay-layout"><div className="replay-main">
             <Panel title="YES contract price">
                 <p className="panel-help">A YES contract pays $1 if YES wins. These lines show what people offered to buy and sell it for.</p>
-                <Chart data={overview.series} field="contract" markers={markers} trades={overview.trades} onSeek={sendSeek} />
+                <Chart data={overview.series} field="contract" markers={markers.filter(marker => marker.text !== 'YOU ARE HERE')} trades={overview.trades} onSeek={sendSeek} playhead={smoothTime ?? now} />
                 <div className="legend"><span><i className="legend-bid" /> Buy offers</span><span><i className="legend-ask" /> Sell offers</span><span><i /> Price in between</span><span className="muted">Click to jump in time</span></div>
             </Panel>
             <Panel title="Coin price and target">
                 <p className="panel-help">Compare the coin price with the target this market is asking about.</p>
-                <Chart data={overview.series} field="ref" strike={strike} onSeek={sendSeek} />
+                <Chart data={overview.series} field="ref" strike={strike} onSeek={sendSeek} playhead={smoothTime ?? now} />
                 <div className="legend"><span><i className="legend-bid" /> Market's reference price (CF Benchmarks)</span><span><i className="legend-coinbase" /> Coinbase: {frame?.coinbase ? `$${money(frame.coinbase)}` : 'Not available'}</span></div>
             </Panel>
             <details className="advanced-panel"><summary>More detail: buy and sell activity</summary>
-                <Panel title="Offers at each price"><p className="panel-help">Brighter areas mean more contracts were offered at that price.</p><DepthCanvas overview={overview} playhead={now} /><div className="heat-label"><span>$1.00</span><span>YES contract price</span><span>$0.00</span></div></Panel>
+                <Panel title="Offers at each price"><p className="panel-help">Brighter areas mean more contracts were offered at that price.</p><DepthCanvas overview={overview} playhead={smoothTime ?? now} /><div className="heat-label"><span>$1.00</span><span>YES contract price</span><span>$0.00</span></div></Panel>
                 <Panel title="Market updates"><Table columns={['Time', 'Update type', 'What happened']} rows={[...events.map(e => [utc(e.ts_ms), <Tag tone={e.kind}>{e.kind}</Tag>, e.text]), ...overview.lifecycle.map(e => [utc(e.ts_ms), <Tag tone="lifecycle">Market update</Tag>, e.text])]} empty="No market or connection updates to show." /></Panel>
                 <p className="panel-help">Market reference: <code>{overview.window.market_ticker}</code></p>
             </details>
@@ -216,7 +237,7 @@ else {
             <Button title="Go forward one second" onClick={() => send('step', { ms: 1000 })}><Icon name="forward" /> 1s</Button>
             <Button title="Go forward ten seconds" onClick={() => send('step', { ms: 10000 })}><Icon name="forward" /> 10s</Button>
             <select aria-label="Playback speed" value={speed} onChange={e => { const n = Number(e.target.value); setSpeed(n); send('speed', { speed: n }); }}>{[.25, .5, 1, 2, 4, 8, 16, 60].map(n => <option value={n} key={n}>{n}x speed</option>)}</select>
-        </div><div className="seek-wrap"><input aria-label="Replay timeline" className="seek" type="range" min={overview.start_ms} max={overview.end_ms} value={Math.max(overview.start_ms, Math.min(now, overview.end_ms))} onChange={e => sendSeek(Number(e.target.value))} /><div className="slider-markers">{[...overview.lifecycle, ...events].map((ev, i) => <i key={i} className={ev.kind || 'lifecycle'} style={{ left: `${Math.max(0, Math.min(100, (ev.ts_ms - overview.start_ms) / (overview.end_ms - overview.start_ms) * 100))}%` }} title={ev.text} />)}</div></div>
+        </div><div className="seek-wrap"><input aria-label="Replay timeline" className="seek" type="range" min={overview.start_ms} max={overview.end_ms} value={Math.max(overview.start_ms, Math.min(smoothTime ?? now, overview.end_ms))} onChange={e => sendSeek(Number(e.target.value))} /><div className="slider-markers">{[...overview.lifecycle, ...events].map((ev, i) => <i key={i} className={ev.kind || 'lifecycle'} style={{ left: `${Math.max(0, Math.min(100, (ev.ts_ms - overview.start_ms) / (overview.end_ms - overview.start_ms) * 100))}%` }} title={ev.text} />)}</div></div>
         <div className="transport-time"><span>{new Date(now).toLocaleTimeString()}</span><span>{Math.max(0, Math.round((overview.close_ms - now) / 1000))}s left</span></div></div>
     </>;
 }
@@ -512,7 +533,7 @@ catch { } sessionStorage.removeItem('csrf'); setUser(null); navigate('/login'); 
     return <div className="loading full"><i />Connecting...</div>; if (!user)
     return location.pathname === '/login' ? <Login onLogin={login}/> : <Navigate to="/login" replace/>; if (location.pathname === '/login')
     return <Navigate to="/live" replace/>;
-    const nav: [string, string, IconName][] = [['/live', 'Live markets', 'chart'], ['/windows', 'Market replays', 'replay'], ['/runs', 'Results', 'chart'], ['/bots', 'My bots', 'bot'], ['/keys', 'Kalshi connection', 'key'], ['/admin', 'Settings', 'settings']];
+    const nav: [string, string, IconName][] = [['/live', 'Live markets', 'chart'], ['/windows', 'Market replays', 'replay'], ['/research', 'Agent research', 'sparkles'], ['/runs', 'Results', 'chart'], ['/bots', 'My bots', 'bot'], ['/keys', 'Kalshi connection', 'key'], ['/admin', 'Settings', 'settings']];
     return <div className="app-shell">
         <a className="skip-link" href="#main-content">Skip to content</a>
         <aside className="sidebar"><Link className="logo" to="/windows" aria-label={APP_NAME}><span className="brand-mark small"><Icon name="sparkles" /></span><span className="brand-name">AQLab<small>Kalshi Scalper Center</small></span></Link><div className="nav-label">YOUR SPACE</div><nav aria-label="Main navigation">{nav.filter(([path]) => path !== '/admin' || user.role === 'admin').map(([path, label, icon]) => <Link key={path} aria-label={label} title={label} aria-current={location.pathname.startsWith(path) ? 'page' : undefined} className={location.pathname.startsWith(path) ? 'active' : ''} to={path}><Icon name={icon} className="nav-icon" /><span>{label}</span></Link>)}</nav><div className="sidebar-foot"><Icon name="shield" /><b>Practice first.</b><small>Real-money trades can lose money. You decide when to start.</small></div></aside>
@@ -523,5 +544,5 @@ catch { } sessionStorage.removeItem('csrf'); setUser(null); navigate('/login'); 
 }
 catch (e) {
     notify((e as Error).message);
-} }}><Icon name="key" /> Change password</button><button onClick={logout}><Icon name="logout" /> Sign out</button></div>}</div></header><div className="page"><Routes><Route path="/" element={<Navigate to="/live"/>}/><Route path="/live" element={<LiveMarkets />}/><Route path="/windows" element={<Windows />}/><Route path="/replay/:windowId" element={<Replay />}/><Route path="/runs" element={<Runs />}/><Route path="/runs/:id" element={<RunDetail />}/><Route path="/bots" element={<Bots user={user} notify={notify}/>}/><Route path="/keys" element={<Keys notify={notify}/>}/><Route path="/admin" element={user.role === 'admin' ? <Admin notify={notify}/> : <Navigate to="/windows"/>}/><Route path="*" element={<Navigate to="/live"/>}/></Routes></div></main>{toast && <div className="toast" role="status">{toast}</div>}</div>; }
+} }}><Icon name="key" /> Change password</button><button onClick={logout}><Icon name="logout" /> Sign out</button></div>}</div></header><div className="page"><Routes><Route path="/" element={<Navigate to="/live"/>}/><Route path="/live" element={<LiveMarkets />}/><Route path="/windows" element={<Windows />}/><Route path="/research" element={<Research />}/><Route path="/replay/:windowId" element={<Replay />}/><Route path="/runs" element={<Runs />}/><Route path="/runs/:id" element={<RunDetail />}/><Route path="/bots" element={<Bots user={user} notify={notify}/>}/><Route path="/keys" element={<Keys notify={notify}/>}/><Route path="/admin" element={user.role === 'admin' ? <Admin notify={notify}/> : <Navigate to="/windows"/>}/><Route path="*" element={<Navigate to="/live"/>}/></Routes></div></main>{toast && <div className="toast" role="status">{toast}</div>}</div>; }
 export default App;

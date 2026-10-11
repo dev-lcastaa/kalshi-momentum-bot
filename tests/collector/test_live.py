@@ -1,3 +1,6 @@
+import asyncio
+import time
+
 from fastapi.testclient import TestClient
 
 from kmb.collector.live import LiveMarkets
@@ -53,3 +56,37 @@ def test_status_api_exposes_live_snapshot():
     assert TestClient(app).get("/live-markets").json() == payload
     missing = create_status_app(lambda: {}, lambda: True)
     assert TestClient(missing).get("/live-markets").status_code == 503
+
+
+def test_socket_pushes_events_and_cleans_up():
+    live = LiveMarkets()
+    count = 0
+
+    def snapshot():
+        return {"markets": [], "ts_ms": count}
+
+    app = create_status_app(lambda: {}, lambda: True, snapshot, live.subscribers)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/live-markets") as ws:
+            assert ws.receive_json()["ts_ms"] == 0
+            assert len(live.subscribers) == 1
+            count = 1
+            started = time.monotonic()
+            async def publish():
+                live.apply({"kind": "control", "stream": "control", "recv_wall_ms": 1,
+                            "data": {"event": "connected"}})
+            client.portal.call(publish)
+            assert ws.receive_json()["ts_ms"] == 1
+            assert time.monotonic() - started < 1
+        assert not live.subscribers
+
+
+def test_live_notifications_are_bounded():
+    live = LiveMarkets()
+    event = asyncio.Event()
+    live.subscribers.add(event)
+    for _ in range(1000):
+        live.apply({"kind": "control", "stream": "control", "recv_wall_ms": 1,
+                    "data": {"event": "connected"}})
+    assert event.is_set()
+    assert len(live.subscribers) == 1

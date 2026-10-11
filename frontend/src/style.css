@@ -25,6 +25,56 @@ button { cursor: pointer; }
 a { color: inherit; text-decoration: none; }
 button, a, input, select { -webkit-tap-highlight-color: transparent; }
 :focus-visible { outline: 2px solid #adc7ff; outline-offset: 4px; }
+.replay-chart-wrap { position: relative; overflow: hidden; }
+.replay-chart-cursor { position: absolute; top: 0; bottom: 28px; left: 0; width: 1px; background: #efd08e; pointer-events: none; z-index: 2; will-change: transform; }
+.replay-depth-cursor { position: absolute; top: 0; bottom: 0; width: 1px; background: #efd08e; pointer-events: none; }
+.research-page { overflow-wrap: anywhere; }
+.research-safety { display: flex; align-items: center; gap: 12px; padding: 16px 20px; margin-bottom: 22px; border: 1px solid #67e4be30; border-radius: 16px; background: #67e4be08; color: #b8d9ce; font-size: 13px; }
+.research-safety .icon { color: var(--green); }
+.research-card-list { display: grid; gap: 14px; padding: 0 22px 22px; }
+.research-card { min-width: 0; padding: 20px; border: 1px solid var(--border); border-radius: 18px; background: #ffffff03; }
+.research-card h3, .research-card h4, .research-study h3 { margin: 0; }
+.research-card > p, .research-study p, .research-evidence > p { color: #b4bdd2; font-size: 13px; line-height: 1.7; }
+.research-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.research-card-heading h4 { margin-top: 6px; }
+.research-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 20px 0; }
+.research-metrics dt { color: var(--muted); font-size: 11px; margin-bottom: 6px; }
+.research-metrics dd { margin: 0; font-size: 19px; font-weight: 650; }
+.research-verdict { font-weight: 600; }
+.research-note { font-size: 12px; color: var(--muted); line-height: 1.7; }
+.research-details { margin: 18px 0; font-size: 13px; }
+.research-details > summary { cursor: pointer; padding: 10px 0; color: var(--blue); }
+.research-settings { margin: 10px 0 20px; }
+.research-settings > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(100px, auto); gap: 20px; padding: 10px 0; border-bottom: 1px solid #ffffff0a; }
+.research-settings dt { color: var(--muted); }
+.research-settings dd { margin: 0; text-align: right; }
+.research-study { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 18px; border: 1px solid var(--border); border-radius: 16px; }
+.research-study h3 { font-size: 15px; }
+.research-study p { margin: 6px 0; }
+.research-study small, .research-finding small { color: var(--muted); font-size: 11px; }
+.research-study .button { flex-shrink: 0; }
+.research-evidence { border-top: 1px solid var(--border); padding: 22px; }
+.research-trials { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.research-trials .research-metrics { grid-template-columns: 1fr; gap: 12px; }
+.research-trials .research-metrics > div { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
+.research-finding { margin: 12px 0; padding: 12px 18px; border-left: 2px solid #a99eef; background: #ffffff03; }
+.research-finding p { margin: 0 0 8px; white-space: pre-wrap; font-size: 13px; }
+.research-access { padding: 0 22px 22px; font-size: 13px; }
+.research-access-form { display: flex; align-items: end; gap: 12px; margin: 20px 0; flex-wrap: wrap; }
+.research-access-form label { display: grid; gap: 8px; flex: 1; min-width: 180px; }
+.research-access .research-study { margin-top: 12px; }
+.research-token { padding: 18px; margin-bottom: 18px; border: 1px solid #a99eef60; border-radius: 16px; }
+.research-token input { width: 100%; margin-bottom: 12px; }
+@media (max-width: 1100px) { .research-trials { grid-template-columns: 1fr; } }
+@media (max-width: 640px) {
+  .research-card-list, .research-evidence, .research-access { padding: 0 16px 16px; }
+  .research-evidence { padding-top: 16px; }
+  .research-card { padding: 16px; }
+  .research-study { align-items: flex-start; flex-direction: column; }
+  .research-metrics { grid-template-columns: 1fr; }
+  .research-settings > div { grid-template-columns: 1fr; gap: 5px; }
+  .research-settings dd { text-align: left; }
+}
 .icon { width: 20px; height: 20px; flex-shrink: 0; vertical-align: middle; }
 .app-shell { min-height: 100vh; }
 .skip-link { position: fixed; top: -80px; left: 20px; z-index: 30; padding: 12px; background: #263658; border-radius: 10px; }

@@ -105,6 +105,120 @@ def test_live_markets_reports_collector_failure(env, monkeypatch):
     assert login(app, "bob", USER_PW).get("/api/live-markets").status_code == 503
 
 
+def test_live_socket_auth_origin_and_missing_collector(env):
+    from starlette.websockets import WebSocketDisconnect
+
+    app, _ = env
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with TestClient(app).websocket_connect("/ws/live-markets"):
+            pass
+    assert exc.value.code == 4401
+    client = login(app, "bob", USER_PW)
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect("/ws/live-markets", headers={"origin": "https://evil.invalid"}):
+            pass
+    assert exc.value.code == 4401
+    with client.websocket_connect("/ws/live-markets") as ws:
+        assert ws.receive_json()["type"] == "error"
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_json()
+        assert exc.value.code == 1013
+
+
+def test_live_socket_relays_and_reports_bad_upstream(env, monkeypatch):
+    import json
+
+    from kmb.backend import live_stream
+
+    app, _ = env
+    app.state.kmb.settings.collector_status_url = "http://collector:8710/status"
+    payload = {"ts_ms": 1, "markets": [], "kalshi_connected": True, "coinbase_connected": True}
+
+    class Upstream:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def __aiter__(self):
+            yield json.dumps(payload)
+            yield "invalid json"
+
+    def connect(url, **kwargs):
+        assert url == "ws://collector:8710/ws/live-markets"
+        return Upstream()
+
+    monkeypatch.setattr(live_stream, "connect", connect)
+    with login(app, "bob", USER_PW).websocket_connect("/ws/live-markets") as ws:
+        assert ws.receive_json() == payload
+        assert ws.receive_json()["type"] == "error"
+
+
+def test_collector_socket_urls():
+    from kmb.backend.live_stream import collector_socket_url
+    assert collector_socket_url("https://collector/base/status") == "wss://collector/base/ws/live-markets"
+    assert collector_socket_url("http://collector/status") == "ws://collector/ws/live-markets"
+    with pytest.raises(ValueError):
+        collector_socket_url("file:///status")
+
+
+def test_live_socket_end_to_end(env):
+    import asyncio
+    import socket
+    import threading
+    import time
+
+    import uvicorn
+
+    from kmb.collector.live import LiveMarkets
+    from kmb.collector.status import create_status_app
+
+    live = LiveMarkets()
+    payload = {"ts_ms": 1, "markets": [], "kalshi_connected": True, "coinbase_connected": True}
+    collector = create_status_app(lambda: {}, lambda: True, lambda: dict(payload), live.subscribers)
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(collector, log_level="error"))
+    loops = []
+
+    async def serve():
+        loops.append(asyncio.get_running_loop())
+        await server.serve(sockets=[listener])
+
+    thread = threading.Thread(target=lambda: asyncio.run(serve()), daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 5
+        while not server.started and thread.is_alive() and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert server.started
+        app, _ = env
+        app.state.kmb.settings.collector_status_url = f"http://127.0.0.1:{port}/status"
+        with login(app, "bob", USER_PW).websocket_connect("/ws/live-markets") as ws:
+            assert ws.receive_json()["ts_ms"] == 1
+
+            async def publish():
+                payload["ts_ms"] = 2
+                live.apply({"kind": "control", "stream": "control", "recv_wall_ms": 2,
+                            "data": {"event": "connected"}})
+
+            started = time.monotonic()
+            asyncio.run_coroutine_threadsafe(publish(), loops[0]).result(timeout=2)
+            assert ws.receive_json()["ts_ms"] == 2
+            assert time.monotonic() - started < 1
+        deadline = time.monotonic() + 2
+        while live.subscribers and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert not live.subscribers
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+        listener.close()
+    assert not thread.is_alive()
+
+
 def test_login_rate_limit(env):
     app, _ = env
     c = TestClient(app)

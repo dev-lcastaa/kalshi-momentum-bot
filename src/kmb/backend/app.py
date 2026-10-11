@@ -1103,7 +1103,13 @@ def create_app(
 
     for r in (auth, users, keys, bots, jobs, runs, windows, opsr):
         app.include_router(r)
+    from kmb.backend.research import router as research_router
+
+    app.include_router(research_router)
     app.add_api_websocket_route("/ws/replay/{window_id}", replay_ws)
+    from kmb.backend.live_stream import live_markets_ws
+
+    app.add_api_websocket_route("/ws/live-markets", live_markets_ws)
 
     static = Path(settings.static_dir).resolve() if settings.static_dir else None
     if static and (static / "index.html").exists():

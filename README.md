@@ -41,6 +41,15 @@ tests/
 Live trading is disabled by default and needs a global switch, a per-user flag, a bot key, no kill switch,
 and passes per-order risk limits.
 
+## Agent research
+
+The **Agent research** page manages scoped MCP tokens, experiment evidence and
+human approval of bounded paper sessions. Agents can run autonomous simulation
+batches without accessing keys, trading bots, administration or live trading.
+The local stdio server is `python -m kmb.mcp`; see
+[docs/research-mcp.md](docs/research-mcp.md) for setup, permissions, tools and the
+training/held-out validation workflow.
+
 ## Development
 
 ```powershell

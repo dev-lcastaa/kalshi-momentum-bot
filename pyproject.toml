@@ -9,6 +9,7 @@ dependencies = [
     "cryptography>=43",
     "fastapi>=0.115",
     "httpx>=0.27",
+    "mcp>=1.26,<2",
     "nats-py>=2.9",
     "psycopg[binary]>=3.2",
     "pyarrow>=17",

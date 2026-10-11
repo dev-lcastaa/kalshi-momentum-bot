@@ -107,6 +107,15 @@ class JobControl:
         self.lease_key_id = lease_key_id
         self.state = ControlState()
         self._last = 0.0
+        self.started_monotonic = time.monotonic()
+        self.duration_seconds = (job.spec or {}).get("duration_seconds")
+        approved = (job.spec or {}).get("risk_limits")
+        self.approved_limits = (
+            Limits(**{
+                key: int(value) if key in ("max_open_orders", "max_orders_per_minute") else D(value)
+                for key, value in approved.items()
+            }) if approved else None
+        )
 
     def poll(self, force: bool = False) -> ControlState:
         now = time.monotonic()
@@ -122,6 +131,11 @@ class JobControl:
             kill = ops.kill_switch_state(s, self.user_id)
             self.state.kill = "global" if kill["global"] else ("user" if kill["user"] else None)
             self.state.limits = Limits.from_row(ops.risk_limits_for(s, self.user_id))
+            if self.approved_limits is not None:
+                self.state.limits = Limits(**{
+                    key: min(value, getattr(self.approved_limits, key))
+                    for key, value in self.state.limits.__dict__.items()
+                })
             if self.lease_key_id is not None and not ops.acquire_key_lease(
                 s, self.lease_key_id, self.job_id, self.wctx.worker_id, KEY_LEASE_TTL
             ):
@@ -245,6 +259,7 @@ def wall_ms() -> int:
 
 def run_sim(wctx: WorkerContext, job: Job) -> dict[str, Any]:
     spec = job.spec or {}
+    _check_research_engine(job)
     window_ids: list[str] = list(spec.get("windows") or [])
     if not window_ids:
         raise JobFailed("sim job has no windows")
@@ -263,11 +278,21 @@ def run_sim(wctx: WorkerContext, job: Job) -> dict[str, Any]:
                 raise JobCanceled()
             try:
                 window = wctx.source.get_window(wid)
+                if spec.get("research"):
+                    from kmb.backend.serializers import window_json
+
+                    expected = next(
+                        row for row in spec["research"]["window_manifest"] if row["window_id"] == wid
+                    )
+                    if window_json(window) | {"sha256": window.get("sha256")} != expected:
+                        raise JobFailed("recording metadata changed since the experiment was created")
                 ticker = window.get("market_ticker")
                 with closing(wctx.source.iter_events(wid)) as metadata_events:
                     mk = first_rest_market(metadata_events, ticker) if ticker else None
             except Exception as exc:
                 rec.on_log("error", "window_unavailable", f"{wid}: {exc}", 0)
+                if spec.get("research"):
+                    raise JobFailed(f"research window unavailable: {wid}") from exc
                 per_window.append({"window_id": wid, "error": str(exc)[:300]})
                 continue
             state = MarketState()
@@ -339,6 +364,15 @@ def run_sim(wctx: WorkerContext, job: Job) -> dict[str, Any]:
     return {"run_id": run_id, **{k: out[k] for k in ("pnl", "n_fills", "n_windows")}}
 
 
+def _check_research_engine(job: Job) -> None:
+    research = (job.spec or {}).get("research")
+    if research:
+        from kmb.research import engine_fingerprint
+
+        if research["engine_fingerprint"] != engine_fingerprint():
+            raise JobFailed("research engine fingerprint differs from the experiment")
+
+
 # ---------------------------------------------------------------------------------------- paper / live loop
 
 
@@ -366,6 +400,12 @@ async def _drive(
     seen = 0
     reason = ""
     while True:
+        if (
+            control.duration_seconds is not None
+            and time.monotonic() - control.started_monotonic >= control.duration_seconds
+        ):
+            reason = "approved duration reached"
+            break
         st = control.poll()
         guard.limits = st.limits
         guard.killed = st.kill
@@ -456,6 +496,7 @@ def _finalize(
 
 
 async def run_paper(wctx: WorkerContext, job: Job, *, max_events: int | None = None) -> dict[str, Any]:
+    _check_research_engine(job)
     if wctx.feed_factory is None:
         raise JobFailed("this worker has no market-data feed configured (KMB_NATS_URL)")
     cfg = sim_config_from_spec((job.spec or {}).get("sim"), seed=job.id)

@@ -287,7 +287,7 @@ class CollectorApp:
             await asyncio.sleep(30)
 
     async def _serve_status(self) -> None:
-        app = create_status_app(self.status, self.ready, self.live_markets)
+        app = create_status_app(self.status, self.ready, self.live_markets, self.live.subscribers)
         config = uvicorn.Config(app, host="0.0.0.0", port=self.config.status_port, log_level="warning")
         self._server = uvicorn.Server(config)
         await self._server.serve()

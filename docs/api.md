@@ -23,6 +23,21 @@ Errors are `{detail: string}` with a suitable status (400/401/403/404/409/422/50
 
 ## Live markets (read-only)
 
+The browser subscribes to authenticated `WS /ws/live-markets`. The backend relays the
+collector's `WS /ws/live-markets` without HTTP polling. Each message has the same
+snapshot shape as the REST endpoint. Subscriptions receive an immediate snapshot,
+then collector event-driven updates coalesced over 50 ms (up to roughly 20 Hz).
+Each subscriber keeps only a pending-update signal, not an unbounded event queue.
+A five-second heartbeat refreshes connectivity, stale-data ages and market boundaries
+even when no price events arrive. Browser countdowns still use a local clock.
+
+Browser sockets use the existing session cookie and origin checks; revoked/expired
+sessions close with code 4401. Upstream failures send `{type: "error", detail}` and
+close with code 1013. The UI retries with bounded exponential backoff, marks old
+prices stale while disconnected, and reconnects if updates stop for 15 seconds.
+Collectors and backends must both be updated to enable this path. Demo preview
+uses simulated 100 ms updates and does not connect to real feeds.
+
 Authenticated `GET /api/live-markets` returns `{ts_ms, kalshi_connected, coinbase_connected, markets}`.
 The backend proxies the collector's `/live-markets` endpoint directly, independent of NATS delivery.
 Each configured coin has an entry, including when no current market is available:
@@ -186,3 +201,45 @@ live_trading_enabled, kill_switch: {global: bool, user: bool}}`.
 max_notional_per_market, max_orders_per_minute}` (decimal strings, ints for the last and `max_open_orders`).
 
 Engaging a kill switch makes workers cancel all resting orders of affected paper/live jobs and stop them.
+
+## Agent research
+
+`/api/research` accepts a scoped `Authorization: Bearer <research-token>` or the
+owner's normal session/CSRF authentication. A research token is **not** accepted
+by ordinary API routes, even when its owner is an admin.
+
+Human-session-only endpoints:
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/research/tokens` | `{label, days?: 1..90}`; returns the token once plus its ID and expiry |
+| GET | `/api/research/tokens` | Own token IDs/labels/expiry, never plaintext tokens |
+| DELETE | `/api/research/tokens/{id}` | Revoke own token |
+| POST | `/api/research/paper-proposals/{id}/approve` | Approve once and queue the immutable paper configuration |
+| POST | `/api/research/paper-proposals/{id}/reject` | Reject a pending proposal |
+
+Research-token or human-session endpoints:
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/research/capabilities` | Strategy schemas, research bounds and engine fingerprint |
+| GET | `/api/research/windows?series=&start=&end=&limit=100` | Recording catalog; max 500 |
+| GET | `/api/research/windows/{id}/overview?offset=0&limit=60` | Paginated overview sections and their total counts; max 200 |
+| POST | `/api/research/experiments` | Immutable hypothesis, criteria, candidates and chronological split plan |
+| GET | `/api/research/experiments?limit=50` | Own experiment catalog; max 100 |
+| GET | `/api/research/experiments/{id}?include_manifest=false&notes_offset=0&notes_limit=5` | Resolved plan and newest-first paginated notes (max 20); optionally full recording metadata |
+| POST | `/api/research/experiments/{id}/notes` | Append `{text}`; max 100 notes, 4,000 chars each |
+| POST | `/api/research/experiments/{id}/batches` | `{split: "train"\|"test"}`; queue bounded jobs or return existing batch |
+| GET | `/api/research/experiments/{id}/results` | Labeled trial metrics, profitable/losing/traded-window stats, job state, comparison validity |
+| GET | `/api/research/jobs/{id}` | Own research sim/paper job status |
+| POST | `/api/research/jobs/{id}/stop` | Cancel/stop own research sim/paper job |
+| GET | `/api/research/jobs/{id}/run?section=summary&offset=0&limit=100` | Summary or paginated `windows`, `orders`, `fills`; max 200 |
+| POST | `/api/research/experiments/{id}/paper-proposals` | `{candidate: zero-based index, rationale, duration_minutes?: 1..1440}` |
+| GET | `/api/research/paper-proposals?limit=50` | Own proposals and approved job IDs; max 100 |
+
+Research jobs have `bot_id=null` and an immutable strategy snapshot; they do not
+create or mutate ordinary bots. Job responses omit the large `spec` and include
+a compact `research: {experiment_id, candidate, split}` reference.
+Non-owned/non-research jobs return 404. Test batches require successful training
+first. Approval/queue/engine conflicts return 409; invalid plans return 422.
+See [research-mcp.md](research-mcp.md) for request examples and operational limits.

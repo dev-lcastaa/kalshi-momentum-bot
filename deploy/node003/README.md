@@ -85,6 +85,16 @@ and the key is not leased by another live job. Risk limits (order size, position
 open orders, orders per minute, daily loss) are enforced by every worker before each order. Engaging a kill switch
 stops running paper/live jobs.
 
+## Agent research
+
+The backend/UI also serves **Agent research** for scoped MCP tokens, experiment
+results and human-only paper approvals. MCP runs on the agent workstation over
+stdio and reaches this backend through HTTPS or a localhost SSH tunnel; it needs
+no additional deployed service. See [../../docs/research-mcp.md](../../docs/research-mcp.md).
+Deploy the updated backend and workers together so source fingerprints match.
+Keep simulation workers enabled; approved paper jobs additionally need at least
+one paper-capable trade worker. Live trading can remain disabled.
+
 ## Operations
 
 ```bash

@@ -5,7 +5,7 @@ dark glass style, inline SVG icons, and plain-language labels.
 
 ## Interface
 
-- **Live markets** (home): Bitcoin and Ethereum stacked in full-width cards, refreshed every second, with
+- **Live markets** (home): Bitcoin and Ethereum stacked in full-width cards, streamed over a WebSocket, with
   current 15-minute windows, prices to beat, YES/NO costs and one graph per coin.
   Each card separates the local-time market window and large `mm:ss` countdown
   from three labeled tiles: Kalshi price, price to beat, and dollars above/below
@@ -14,6 +14,9 @@ dark glass style, inline SVG icons, and plain-language labels.
   Green shows Kalshi's coin price, blue shows Coinbase's price, and a dashed gold
   line marks the price to beat. There is no separate YES-price graph.
   Charts collect up to 15 minutes while the page is open and reset when each market rolls over.
+  Live subscriptions reconnect with backoff instead of polling. Collector updates are
+  coalesced over 50 ms, with a five-second heartbeat; charts retain subsecond samples
+  (at most 18,000 per coin) and smoothly animate only the newest point.
   Disconnections and missing prices are shown explicitly; viewing does not place orders.
 - **Market replays**: choose a recording, then play, pause, rewind, or change playback speed.
   Starts with the latest six recordings; **Load more** adds six at a time. Refresh
@@ -47,3 +50,17 @@ From `frontend/`, install dependencies with `npm ci`, then run `npm run dev`. Th
 - `npm run build` — type-check and create `frontend/dist`
 
 The production bundle uses base path `/`. The backend serves `frontend/dist` at `/` with SPA fallback; API calls use relative same-origin paths and the session cookie. The replay client sends `X-KMB-CSRF` on state-changing requests using the token returned by login or `/api/auth/me`.
+
+## Price display motion
+
+Live chart tails transition between received prices over up to 150 ms, adapting to the
+update interval. Displayed quote
+numbers and stored history remain the actual received values; intermediate chart
+positions are visual interpolation, not additional market ticks. Missing prices,
+feed gaps and market rollovers are not interpolated.
+
+Replay chart cursors, timeline and depth playhead move between received frames
+over 100 ms without extrapolating beyond the latest received timestamp. Pausing,
+backward jumps and large seeks snap to the received position. Recorded prices and
+trade selection continue to use the original replay frames. Reduced-motion
+preferences disable interpolation.

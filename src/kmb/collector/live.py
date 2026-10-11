@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 from typing import Any
 
@@ -17,11 +18,14 @@ def _string(value: Decimal | None) -> str | None:
 class LiveMarkets:
     def __init__(self) -> None:
         self.state = MarketState()
+        self.subscribers: set[asyncio.Event] = set()
 
     def apply(self, envelope: dict[str, Any]) -> None:
         if envelope.get("msg_type") in ("orderbook_delta", "orderbook_snapshot"):
             return
         self.state.apply(event_from_record(envelope))
+        for subscriber in self.subscribers:
+            subscriber.set()
 
     def snapshot(
         self,

@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { AreaSeries, LineSeries, createChart, type AutoscaleInfo, type IChartApi, type ISeriesApi, type LineData, type Time, type UTCTimestamp, type WhitespaceData } from 'lightweight-charts';
 import { Link } from 'react-router-dom';
-import { api, type LiveMarket, type LiveSnapshot } from './api';
+import { type LiveMarket, type LiveSnapshot } from './api';
 import { formatCents } from './helpers';
 import { Icon } from './Icon';
+import { animatePrice, interpolatePrice } from './priceMotion';
+import { connectLiveStream } from './liveStream';
 
 const COINS = [
   { series: 'KXBTC15M', name: 'Bitcoin', symbol: 'BTC' },
@@ -27,7 +29,7 @@ export function updateLiveHistory(previous: LiveHistory, snapshot: LiveSnapshot)
     };
     next[market.series_ticker] = {
       ticker: market.market_ticker,
-      points: [...points.filter(p => p.ts < sample.ts && p.ts >= snapshot.ts_ms - 900_000), sample].slice(-900),
+      points: [...points.filter(p => p.ts < sample.ts && p.ts >= snapshot.ts_ms - 900_000), sample].slice(-18_000),
     };
   }
   return next;
@@ -50,6 +52,9 @@ function PriceGraph({ points, label, strike, ticker }: {
   const graph = useRef<{ chart: IChartApi; price: ISeriesApi<'Area'>; reference: ISeriesApi<'Line'> } | null>(null);
   const fitted = useRef(false);
   const target = useRef(strike);
+  const displayed = useRef<{ ticker: string | null; ts: number; coinbase: number | null; ref: number | null } | null>(null);
+  const loaded = useRef<{ ticker: string | null; start: number; refreshed: number } | null>(null);
+  const lastSample = useRef<Sample | null>(null);
   target.current = strike;
   useEffect(() => {
     if (!host.current) return;
@@ -73,7 +78,7 @@ function PriceGraph({ points, label, strike, ticker }: {
     });
     const price = chart.addSeries(AreaSeries, {
       lineColor: '#91b9ff', topColor: '#91b9ff25', bottomColor: '#91b9ff02', lineWidth: 2,
-      priceLineVisible: false, lastValueVisible: true, crosshairMarkerRadius: 4,
+      priceLineVisible: false, lastValueVisible: false, crosshairMarkerRadius: 4,
       autoscaleInfoProvider: (original: () => AutoscaleInfo | null) => {
         const scale = original();
         if (scale?.priceRange && target.current !== null && Number.isFinite(Number(target.current))) {
@@ -99,18 +104,51 @@ function PriceGraph({ points, label, strike, ticker }: {
   useEffect(() => {
     if (!graph.current) return;
     const { chart, price, reference } = graph.current;
+    const timestamp = points[points.length - 1]?.ts ?? 0;
+    const first = points[0]?.ts ?? 0;
+    const rebuild = loaded.current?.ticker !== ticker || first < loaded.current.start ||
+      (first !== loaded.current.start && timestamp - loaded.current.refreshed >= 5000);
     function rows(key: 'coinbase' | 'ref'): (LineData<UTCTimestamp> | WhitespaceData<UTCTimestamp>)[] {
       const seconds = new Map<number, Sample>();
-      for (const point of points) seconds.set(Math.floor(point.ts / 1000), point);
+      const samples = rebuild ? points : points.slice(-1);
+      for (const point of samples) seconds.set(point.ts / 1000, point);
       return [...seconds].sort(([a], [b]) => a - b).map(([second, point]) => {
         const value = point[key], time = second as UTCTimestamp;
         return value !== null && Number.isFinite(value) ? { time, value } : { time };
       });
     }
-    price.setData(rows('coinbase'));
-    reference.setData(rows('ref'));
+    const priceRows = rows('coinbase'), referenceRows = rows('ref');
+    const latestPrice = priceRows[priceRows.length - 1], latestRef = referenceRows[referenceRows.length - 1];
+    const nextPrice = latestPrice && 'value' in latestPrice ? latestPrice.value : null;
+    const nextRef = latestRef && 'value' in latestRef ? latestRef.value : null;
+    const old = displayed.current?.ticker === ticker && timestamp > displayed.current.ts &&
+      timestamp - displayed.current.ts <= 2500 ? displayed.current : null;
+    if (rebuild) {
+      price.setData(priceRows);
+      reference.setData(referenceRows);
+      loaded.current = { ticker, start: first, refreshed: timestamp };
+    } else {
+      const previous = lastSample.current;
+      if (previous && previous.ts < timestamp) {
+        const time = previous.ts / 1000 as UTCTimestamp;
+        price.update(previous.coinbase !== null && Number.isFinite(previous.coinbase)
+          ? { time, value: previous.coinbase } : { time });
+        reference.update(previous.ref !== null && Number.isFinite(previous.ref)
+          ? { time, value: previous.ref } : { time });
+      }
+      if (latestPrice) price.update(latestPrice);
+      if (latestRef) reference.update(latestRef);
+    }
+    lastSample.current = points[points.length - 1] ?? null;
     if (!fitted.current && points.length > 1) { chart.timeScale().fitContent(); fitted.current = true; }
     else if (fitted.current) chart.timeScale().scrollToRealTime();
+    return animatePrice(old ? Math.min(150, timestamp - old.ts) : 0, progress => {
+      const coinbase = interpolatePrice(old?.coinbase ?? null, nextPrice, progress);
+      const ref = interpolatePrice(old?.ref ?? null, nextRef, progress);
+      if (latestPrice && coinbase !== null) price.update({ time: latestPrice.time, value: coinbase });
+      if (latestRef && ref !== null) reference.update({ time: latestRef.time, value: ref });
+      displayed.current = { ticker, ts: timestamp, coinbase, ref };
+    });
   }, [points, ticker]);
   useEffect(() => {
     if (!graph.current || strike === null || !Number.isFinite(Number(strike))) return;
@@ -170,7 +208,7 @@ export function MarketCard({ coin, market, snapshot, points, now, failed }: {
       </div>
     </div>
     <div className="live-chart-section"><div className="live-graph-controls">
-      <h3><Icon name="chart" /> Price movement</h3><span>{live ? 'Refreshes every second' : 'Waiting for updates'}</span>
+      <h3><Icon name="chart" /> Price movement</h3><span>{live ? 'Live stream connected' : 'Waiting for updates'}</span>
     </div><div className="live-graph-legend"><span className="green">Kalshi</span><span className="blue">Coinbase</span><span className="gold">Price to beat</span></div>
     <PriceGraph points={points} strike={market?.strike ?? null} ticker={market?.market_ticker ?? null} label={`${coin.name} Kalshi and Coinbase live price graph`} />
     </div>
@@ -201,25 +239,23 @@ export default function LiveMarkets() {
   }, []);
   useEffect(() => {
     let active = true;
-    let timer: ReturnType<typeof setTimeout>;
-    async function refresh() {
-      try {
-        const data = await api<LiveSnapshot>('/api/live-markets');
-        if (!active) return;
-        setSnapshot(data);
-        setHistory(previous => updateLiveHistory(previous, data));
-        setError('');
-      } catch (e) {
-        if (active) setError((e as Error).message);
-      } finally {
-        if (active) { setNow(Date.now()); timer = setTimeout(refresh, 1000); }
-      }
+    let disconnect: (() => void) | undefined;
+    const receive = (data: LiveSnapshot) => {
+      if (!active) return;
+      setSnapshot(data);
+      setHistory(previous => updateLiveHistory(previous, data));
+      setNow(Date.now()); setError('');
+    };
+    if (import.meta.env.VITE_MOCK === '1') {
+      import('./mock').then(module => { if (active) disconnect = module.mockLiveStream(receive); })
+        .catch(error => { if (active) setError((error as Error).message); });
+    } else {
+      disconnect = connectLiveStream(receive, message => { if (active) setError(message); });
     }
-    void refresh();
-    return () => { active = false; clearTimeout(timer); };
+    return () => { active = false; disconnect?.(); };
   }, []);
   return <>
-    <div className="page-title"><div><h1>Live markets</h1><p>Watch Bitcoin and Ethereum together. Prices refresh every second.</p></div><Link className="button" to="/windows"><Icon name="replay" /> Watch past markets</Link></div>
+    <div className="page-title"><div><h1>Live markets</h1><p>Watch Bitcoin and Ethereum together. Prices arrive through a live connection.</p></div><Link className="button" to="/windows"><Icon name="replay" /> Watch past markets</Link></div>
     <p className="live-safety"><Icon name="shield" /> Watching does not place trades or use your money.</p>
     {error && <div className="error-box" role="alert">{error} Last received prices remain below; they are not live until updates return.</div>}
     <div className="live-market-grid">{COINS.map(coin => <MarketCard key={coin.series} coin={coin}
