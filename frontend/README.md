@@ -16,6 +16,11 @@ dark glass style, inline SVG icons, and plain-language labels.
   Charts collect up to 15 minutes while the page is open and reset when each market rolls over.
   Disconnections and missing prices are shown explicitly; viewing does not place orders.
 - **Market replays**: choose a recording, then play, pause, rewind, or change playback speed.
+  Starts with the latest six recordings; **Load more** adds six at a time. Refresh
+  and filter changes reset the list to six. At the API's 1,000-record limit, use
+  date filters to find older markets. YES outcomes are green and NO outcomes red.
+  Recording explanations follow the overall quality check, not just the gap count:
+  recovered interruptions can still mean missing events even if the gap counter is zero.
 - **Results**: see profit/loss, orders placed, and completed trades.
 - **My bots**: test past markets, practice live with pretend money, or explicitly confirm real-money trading.
 - **Kalshi connection**: connect an account; private keys remain hidden after saving.

@@ -5,7 +5,7 @@ const labels: Record<string, string> = {
   calibration: 'Replay accuracy check', momentum: 'Follow price moves', noop: 'Watch only',
   queued: 'Waiting to start', running: 'In progress', succeeded: 'Finished', failed: 'Needs attention',
   canceled: 'Stopped', active: 'Connected', disabled: 'Off', enabled: 'On', engaged: 'Paused', clear: 'Ready',
-  ok: 'Complete recording', degraded: 'Some data missing', bad: 'Incomplete recording', unknown: 'Not checked',
+  ok: 'Complete recording', degraded: 'Recovered interruptions', bad: 'Incomplete recording', unknown: 'Not checked',
   production: 'Real Kalshi account', demo: 'Kalshi practice account', user: 'Member', admin: 'Administrator',
   lifecycle: 'Market update', transport: 'Connection update', gap: 'Missing data',
   info: 'Update', warn: 'Warning', error: 'Problem',
@@ -63,4 +63,15 @@ export function marketName(series: string): string {
   if (series.startsWith('KXBTC15M')) return 'Bitcoin';
   if (series.startsWith('KXETH15M')) return 'Ethereum';
   return series;
+}
+
+export function recordingHelp(quality: string): string {
+  if (quality === 'ok') return 'No gaps or connection interruptions detected.';
+  if (quality === 'degraded') return 'Connection or data gaps occurred. Updates resumed, but some events may be missing.';
+  if (quality === 'bad') return 'Missing data, an unrecovered interruption, or unavailable order-book data.';
+  return 'Recording completeness has not been checked.';
+}
+
+export function outcomeTone(result: string | null): string {
+  return result === 'yes' ? 'good' : result === 'no' ? 'bad' : '';
 }

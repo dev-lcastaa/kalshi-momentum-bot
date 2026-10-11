@@ -4,7 +4,7 @@ import { createChart, LineSeries, createSeriesMarkers, type Time } from 'lightwe
 import { formatCents, formatDecimal } from './helpers';
 import { api, type Bot, type Frame, type Job, type Overview, type User, type WindowRecord, wsUrl } from './api';
 import { Icon, type IconName } from './Icon';
-import { APP_NAME, friendlyLabel, marketName, parameterHelp } from './language';
+import { APP_NAME, friendlyLabel, marketName, parameterHelp, recordingHelp, outcomeTone } from './language';
 import LiveMarkets from './LiveMarkets';
 const money = (value: unknown, digits = 2) => { if (value == null || value === '')
     return 'N/A'; const fixed = formatDecimal(String(value), digits); const [whole, fraction = ''] = fixed.split('.'); return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (digits ? '.' + fraction : ''); };
@@ -70,16 +70,20 @@ finally {
 } }; return <div className="login-screen"><form className="login-card" onSubmit={submit}><div className="brand-mark"><Icon name="sparkles" /></div><div className="eyebrow">AQLab</div><h1>{APP_NAME}</h1><p>Watch past markets. Test your ideas. Stay in control.</p><h2>Welcome back</h2>{error && <div className="error-box" role="alert">{error}</div>}<label>Username<input autoComplete="username" value={username} onChange={e => setUsername(e.target.value)} required/></label><label>Password<input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required/></label><Button type="submit" kind="primary" disabled={busy}>{busy ? 'Signing in...' : 'Sign in'}</Button><small>Practice first. Real-money trading carries a risk of loss.</small></form></div>; }
 function Windows() {
     const [items, setItems] = useState<WindowRecord[]>([]), [loading, setLoading] = useState(true);
+    const [visible, setVisible] = useState(6), [hasMore, setHasMore] = useState(false), [refresh, setRefresh] = useState(0);
     const [series, setSeries] = useState(''), [from, setFrom] = useState(''), [to, setTo] = useState(''), [error, setError] = useState('');
-    const load = useCallback(() => {
+    useEffect(() => {
+        let active = true;
         setLoading(true); setError('');
-        const q = new URLSearchParams({ limit: '100' });
+        const q = new URLSearchParams({ limit: String(Math.min(visible + 1, 1000)) });
         if (series) q.set('series', series);
         if (from) q.set('from', new Date(from).toISOString());
         if (to) q.set('to', new Date(to).toISOString());
-        api<WindowRecord[]>(`/api/windows?${q}`).then(setItems).catch(e => setError((e as Error).message)).finally(() => setLoading(false));
-    }, [series, from, to]);
-    useEffect(() => { load(); }, [load]);
+        api<WindowRecord[]>(`/api/windows?${q}`).then(rows => {
+            if (active) { setItems(rows.slice(0, visible)); setHasMore(rows.length > visible); }
+        }).catch(e => { if (active) setError((e as Error).message); }).finally(() => { if (active) setLoading(false); });
+        return () => { active = false; };
+    }, [series, from, to, visible, refresh]);
     return <>
         <PageTitle title="Market replays" subtitle="Watch a 15-minute market again, at your own pace." />
         <section className="welcome-card">
@@ -91,15 +95,17 @@ function Windows() {
             <div><span className="summary-icon purple"><Icon name="chart" /></span><div><b>Bitcoin & Ethereum</b><small>15-minute prediction markets</small></div></div>
             <div><span className="summary-icon green"><Icon name="shield" /></span><div><b>Watch without trading</b><small>Replays do not place orders</small></div></div>
         </div>
-        <Panel title="Choose a recording" action={<Button onClick={load}>Refresh</Button>}>
-            <div className="filters"><label>Coin<select value={series} onChange={e => setSeries(e.target.value)}><option value="">All coins</option><option value="KXBTC15M">Bitcoin</option><option value="KXETH15M">Ethereum</option></select></label><label>From date<input type="date" value={from} onChange={e => setFrom(e.target.value)} /></label><label>To date<input type="date" value={to} onChange={e => setTo(e.target.value)} /></label><span className="filter-help">Times are shown in your local timezone.</span></div>
+        <Panel title="Choose a recording" action={<Button onClick={() => { setVisible(6); setRefresh(n => n + 1); }}>Refresh</Button>}>
+            <div className="filters"><label>Coin<select value={series} onChange={e => { setSeries(e.target.value); setVisible(6); }}><option value="">All coins</option><option value="KXBTC15M">Bitcoin</option><option value="KXETH15M">Ethereum</option></select></label><label>From date<input type="date" value={from} onChange={e => { setFrom(e.target.value); setVisible(6); }} /></label><label>To date<input type="date" value={to} onChange={e => { setTo(e.target.value); setVisible(6); }} /></label><span className="filter-help">Newest first · Times shown in your local timezone.</span></div>
             <div className="recordings-table">{error ? <div className="error-box" role="alert">{error}</div> : loading ? <Busy /> : <Table columns={['Market', 'Starts', 'Target price', 'Outcome', 'Recording', '']} rows={items.map(w => [
                 <div className="market-cell"><span className={`coin-badge ${marketName(w.series_ticker) === 'Ethereum' ? 'eth' : ''}`}>{marketName(w.series_ticker) === 'Bitcoin' ? '₿' : 'Ξ'}</span><div><b>{marketName(w.series_ticker)}</b><small>15-minute market</small></div></div>,
                 new Date(w.open_time).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }), `$${money(w.strike)}`,
-                <Tag tone={w.result ? 'good' : ''}>{w.result ? `${w.result.toUpperCase()} won` : 'Not settled yet'}</Tag>,
-                <div className="recording-cell"><Tag tone={w.quality}>{w.quality}</Tag><small>{w.gap_count ? `${w.gap_count} missing sections` : 'No missing sections reported'}</small></div>,
+                <Tag tone={outcomeTone(w.result)}>{w.result ? `${w.result.toUpperCase()} won` : 'Not settled yet'}</Tag>,
+                <div className="recording-cell"><Tag tone={w.quality}>{w.quality}</Tag><small>{recordingHelp(w.quality)}</small></div>,
                 <Link className="button replay-link" to={`/replay/${w.window_id}`}><Icon name="play" /> Watch replay</Link>
             ])} empty="No recordings match these dates. Try another coin or date range." />}</div>
+            {!loading && !error && hasMore && <div className="recording-pagination"><Button onClick={() => setVisible(n => Math.min(n + 6, 1000))}>Load more</Button><small>Show the next 6 recordings</small></div>}
+            {!loading && !error && visible === 1000 && items.length === 1000 && <p className="panel-help">Showing 1,000 recordings. Choose a date range to find older markets.</p>}
         </Panel>
         <p className="page-note"><Icon name="shield" /> A replay shows the past, not a promise of future profit.</p>
     </>;

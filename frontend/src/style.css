@@ -118,6 +118,8 @@ code { font: 11px ui-monospace, Consolas, monospace; color: #b2bfdc; }
 .market-cell { display: flex; align-items: center; gap: 12px; }
 .market-cell b { display: block; color: #e9ecf8; font-size: 13px; font-weight: 600; }
 .market-cell small, .recording-cell small { display: block; color: #929fbd; font-size: 10px; margin-top: 4px; }
+.recording-cell small { max-width: 240px; white-space: normal; line-height: 1.6; }
+.recording-pagination { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 12px; padding: 20px; border-top: 1px solid var(--border); }
 .coin-badge { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 13px; background: #d7a55813; border: 1px solid #ecc47b21; color: #efc78f; font-size: 22px; }
 .coin-badge.eth { background: #8b98eb14; border-color: #94a5ec29; color: #b5bffc; }
 .tag { display: inline-flex; padding: 5px 9px; border: 1px solid #d5deff20; border-radius: 8px; background: #a9b9ea08; color: #b6c2dd; font-size: 10px; font-weight: 500; }
