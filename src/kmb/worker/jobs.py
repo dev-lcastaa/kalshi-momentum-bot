@@ -10,7 +10,8 @@ import asyncio
 import logging
 import socket
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -165,7 +166,7 @@ def sim_config_from_spec(spec_sim: dict[str, Any] | None, seed: int) -> SimConfi
     return SimConfig.from_dict(d)
 
 
-def first_rest_market(events: list[Event], ticker: str) -> dict[str, Any] | None:
+def first_rest_market(events: Iterable[Event], ticker: str) -> dict[str, Any] | None:
     for ev in events:
         if ev.kind == "rest" and ev.msg_type == "rest.market" and isinstance(ev.data, dict):
             body = ev.data.get("body")
@@ -262,25 +263,28 @@ def run_sim(wctx: WorkerContext, job: Job) -> dict[str, Any]:
                 raise JobCanceled()
             try:
                 window = wctx.source.get_window(wid)
-                events = wctx.source.load_events(wid)
+                ticker = window.get("market_ticker")
+                with closing(wctx.source.iter_events(wid)) as metadata_events:
+                    mk = first_rest_market(metadata_events, ticker) if ticker else None
             except Exception as exc:
                 rec.on_log("error", "window_unavailable", f"{wid}: {exc}", 0)
                 per_window.append({"window_id": wid, "error": str(exc)[:300]})
                 continue
-            ticker = window.get("market_ticker")
             state = MarketState()
             ex = SimExchange(cfg, state.books)
             runner = SimRunner(
                 make_strategy(job), ex, state, recorder=rec, tickers=[ticker] if ticker else None
             )
-            mk = first_rest_market(events, ticker) if ticker else None
             if mk:
                 runner.register_market(mk)
-            for n, ev in enumerate(events):
-                runner.step(ev)
-                if n % 2000 == 0 and control.poll().cancel:
-                    raise JobCanceled()
-            end_ms = int(window.get("end_ms") or (events[-1].ts_ms if events else 0))
+            last_ms = 0
+            with closing(wctx.source.iter_events(wid)) as events:
+                for n, ev in enumerate(events):
+                    runner.step(ev)
+                    last_ms = ev.ts_ms
+                    if n % 2000 == 0 and control.poll().cancel:
+                        raise JobCanceled()
+            end_ms = int(window.get("end_ms") or last_ms)
             if not runner.stopped:
                 runner.stop(end_ms)
             summary = runner.finish(end_ms)

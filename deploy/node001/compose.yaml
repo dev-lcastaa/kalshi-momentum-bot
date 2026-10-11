@@ -111,7 +111,7 @@ services:
     cap_drop: [ALL]
     cpus: 1.0
     mem_limit: 1g
-    command: ["-m", "kmb.normalizer", "loop", "--interval", "900"]
+    command: ["-m", "kmb.normalizer", "loop", "--interval", "60"]
     environment:
       KMB_NORMALIZER_ARCHIVE_ROOT: /mnt/storage1/kalshi-archive
       KMB_NORMALIZER_DERIVED_ROOT: /mnt/storage1/kalshi-derived

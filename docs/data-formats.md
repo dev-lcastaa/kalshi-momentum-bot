@@ -55,6 +55,17 @@ Parquet columns (rows sorted in replay order; `ord` = 0..n-1):
 
 Replay order: captures ordered by their first `recv_wall_ms`, then `local_event_seq` within a capture.
 
+The normalizer merges archived streams and writes at most 4096 rows per batch.
+It checks for ready recordings every 60 seconds. Confirmed outcomes are eligible
+after the three-minute post-close tail; unconfirmed outcomes retain the additional
+20-minute settlement wait. Backlog processing and uploads can add delay.
+
+Simulation workers spool downloaded Parquet to a temporary file and replay it in
+4096-row batches without retaining the full recording in their event cache.
+Streaming requires strictly increasing `ord`; invalid ordering fails the run
+rather than silently changing replay order. Interactive replay still uses an
+in-memory event list for seeking, but decodes Parquet in batches.
+
 `window.json` (write-once, rebuilt only by an explicit `--rebuild`):
 
 ```json

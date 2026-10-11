@@ -8,7 +8,7 @@ import time
 
 from kmb.normalizer.config import Config
 from kmb.normalizer.index import FileIndex
-from kmb.normalizer.windows import run_once
+from kmb.normalizer.windows import run_once, window_ready
 
 
 def main():
@@ -17,7 +17,7 @@ def main():
     once = sub.add_parser("run-once")
     once.add_argument("--rebuild", action="store_true", help="explicitly rebuild all ready windows")
     loop = sub.add_parser("loop")
-    loop.add_argument("--interval", type=int, default=900)
+    loop.add_argument("--interval", type=int, default=60)
     sub.add_parser("rebuild").add_argument("window_id")
     sub.add_parser("status")
     args = parser.parse_args()
@@ -56,12 +56,7 @@ def main():
         run_once(cfg)
         index = FileIndex(cfg.state_path, cfg.archive_root, cfg.receipts_path)
         try:
-            ready = [
-                m["ticker"]
-                for m in index.markets()
-                if m.get("close_ms", float("inf")) + 180000 + cfg.settle_lag_ms < int(time.time() * 1000)
-                and "open_ms" in m
-            ]
+            ready = [m["ticker"] for m in index.markets() if window_ready(m, cfg, int(time.time() * 1000))]
         finally:
             index.close()
         for ticker in ready:

@@ -119,6 +119,40 @@ async def test_sim_job_end_to_end(env):
         assert s.scalar(select(BotEvent).where(BotEvent.code == "window_unavailable"))
 
 
+async def test_sim_never_materializes_recording(env, monkeypatch):
+    factory, windows = env
+
+    def reject_loading(*args):
+        raise AssertionError("simulation must stream events instead of loading the whole recording")
+
+    monkeypatch.setattr(LocalWindowSource, "load_events", reject_loading)
+    job_id = _job(factory, "sim", {"bot": _bot(), "windows": [synth.TICKER]})
+    assert await process_one(_wctx(factory, windows), ("sim",))
+    with factory() as session:
+        job = session.get(Job, job_id)
+        assert job.status == "succeeded", job.error
+        run = session.scalar(select(Run).where(Run.job_id == job_id))
+        assert D(run.summary["pnl"]) > 0
+
+
+async def test_sim_stream_failure_is_not_reported_as_success(env, monkeypatch):
+    factory, windows = env
+    original = LocalWindowSource.iter_events
+
+    def failing_events(self, window_id):
+        yield from original(self, window_id)
+        raise ValueError("invalid replay order")
+
+    monkeypatch.setattr(LocalWindowSource, "iter_events", failing_events)
+    job_id = _job(factory, "sim", {"bot": _bot(), "windows": [synth.TICKER]})
+    assert await process_one(_wctx(factory, windows), ("sim",))
+    with factory() as session:
+        job = session.get(Job, job_id)
+        assert job.status == "failed"
+        assert "invalid replay order" in job.error
+        assert session.scalar(select(Run).where(Run.job_id == job_id)).status == "failed"
+
+
 async def test_sim_job_cancel_requested(env):
     factory, windows = env
     job_id = _job(factory, "sim", {"bot": _bot(), "windows": [synth.TICKER]}, cancel_requested=True)

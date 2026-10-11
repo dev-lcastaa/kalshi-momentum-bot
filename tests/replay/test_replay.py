@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import io
+import json
 from decimal import Decimal
 
+import httpx
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from kmb.exchange import OrderRequest
 from kmb.replay.cursor import ReplayCursor
-from kmb.replay.events import event_from_record, read_parquet_events
+from kmb.replay.events import event_from_record, iter_parquet_events, read_parquet_events
 from kmb.replay.runner import SimRunner
-from kmb.replay.source import LocalWindowSource, WindowNotFound
+from kmb.replay.source import DataApiWindowSource, LocalWindowSource, WindowNotFound
 from kmb.replay.state import MarketState
 from kmb.replay.view import build_frame, build_overview, window_times
 from kmb.sim import SimConfig, SimExchange
@@ -112,11 +117,42 @@ def test_local_window_source(tmp_path):
     assert src.list_windows(start="2027-01-01T00:00:00Z") == []
     assert src.get_window(synth.TICKER)["parquet"] == meta["parquet"]
     evs = src.load_events(synth.TICKER)
+    assert list(src.iter_events(synth.TICKER)) == evs
     assert len(evs) == meta["event_count"]
     assert src.load_events(synth.TICKER) is evs  # cached
     assert read_parquet_events(str(tmp_path / meta["parquet"]))[0].kind == "transport"
     with pytest.raises(WindowNotFound):
         src.get_window("nope")
+
+
+def test_http_streamed_events_match_local_recording(tmp_path):
+    meta = synth.write_window(tmp_path)
+    data = (tmp_path / meta["parquet"]).read_bytes()
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=data))
+    source = DataApiWindowSource("http://data-api", "test", transport=transport)
+    assert list(source.iter_events(synth.TICKER)) == read_parquet_events(str(tmp_path / meta["parquet"]))
+    missing = DataApiWindowSource(
+        "http://data-api", "test", transport=httpx.MockTransport(lambda request: httpx.Response(404))
+    )
+    with pytest.raises(WindowNotFound):
+        list(missing.iter_events("missing"))
+
+
+def test_parquet_reader_is_lazy_and_rejects_out_of_order_events():
+    buffer = io.BytesIO()
+    rows = [
+        {"ord": i, "kind": "control", "recv_wall_ms": i, "data": json.dumps({"event": "clock"})}
+        for i in range(10001)
+    ]
+    rows[-1]["ord"] = 0
+    pq.write_table(pa.Table.from_pylist(rows), buffer, row_group_size=4096)
+    buffer.seek(0)
+    events = iter_parquet_events(buffer)
+    assert next(events).local_seq == 0
+    for sequence in range(1, 10000):
+        assert next(events).local_seq == sequence
+    with pytest.raises(ValueError, match="strictly increasing"):
+        next(events)
 
 
 def _run(events, strategy, **cfg):

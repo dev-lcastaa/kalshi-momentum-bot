@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import heapq
 import json
 import logging
 import os
 import time
 import uuid
 from collections import Counter
+from collections.abc import Callable, Iterable, Iterator
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -133,10 +135,11 @@ def stream_holes(index: FileIndex, captures: set[str], open_ms: int, close_ms: i
     return False
 
 
-def quality(all_events: list[dict], selected: list[dict], holes: bool, open_ms: int, close_ms: int):
+def quality(
+    all_events: Iterable[dict], selected: Callable[[dict], bool], holes: bool, open_ms: int, close_ms: int
+):
     gaps, disconnects = 0, 0
     last_seq, pending = {}, set()
-    selected_ids = {(e["capture_id"], e["local_event_seq"]) for e in selected}
     has_book = False
     for event in all_events:
         inside = open_ms <= event["recv_wall_ms"] <= close_ms
@@ -155,7 +158,7 @@ def quality(all_events: list[dict], selected: list[dict], holes: bool, open_ms: 
                 gaps += 1
                 pending.add(key)
             last_seq[seq_key] = event["seq"]
-        if (event["capture_id"], event["local_event_seq"]) in selected_ids:
+        if selected(event):
             if msg in {"orderbook_snapshot", "orderbook_delta", "rest.orderbook"}:
                 has_book = True
             if msg in {"orderbook_snapshot", "rest.orderbook"}:
@@ -163,6 +166,28 @@ def quality(all_events: list[dict], selected: list[dict], holes: bool, open_ms: 
                 pending.discard(key)
     rating = "bad" if holes or not has_book or pending else "degraded" if gaps or disconnects else "ok"
     return rating, gaps, disconnects
+
+
+def window_events(index: FileIndex, rows, start: int, end: int) -> Iterator[dict]:
+    """Merge stream sequences without loading a whole multi-coin window into RAM."""
+    captures = index.capture_starts()
+    grouped = {}
+    for row in rows:
+        if row["verified"]:
+            grouped.setdefault(row["capture_id"], {}).setdefault(row["stream"], []).append(row)
+
+    def stream_events(files):
+        for row in sorted(files, key=lambda r: r["first_stream_seq"]):
+            path = under(index.archive, row["path"])
+            if sha256(path) != row["sha256"]:
+                raise RuntimeError(f"archive changed after indexing: {row['path']}")
+            yield from (event for event in events(path) if start <= event["recv_wall_ms"] <= end)
+
+    for capture in sorted(grouped, key=lambda c: (captures[c], c)):
+        yield from heapq.merge(
+            *(stream_events(files) for files in grouped[capture].values()),
+            key=lambda event: event["local_event_seq"],
+        )
 
 
 def upsert_window(meta: dict, engine):
@@ -211,47 +236,49 @@ def build_window(index: FileIndex, cfg: Config, market: dict, *, rebuild=False) 
         return None
     start, end = open_ms - PRE_OPEN_MS, close_ms + POST_CLOSE_MS
     rows = index.files(start, end)
-    all_events = []
     holes = any(
         not row["verified"] and row["min_ms"] <= close_ms and row["max_ms"] >= open_ms for row in rows
     )
-    for row in rows:
-        if not row["verified"]:
-            continue
-        path = under(cfg.archive_root, row["path"])
-        if sha256(path) != row["sha256"]:
-            raise RuntimeError(f"archive changed after indexing: {row['path']}")
-        all_events.extend(event for event in events(path) if start <= event["recv_wall_ms"] <= end)
     captures = index.capture_starts()
-    all_events.sort(key=lambda e: (captures[e["capture_id"]], e["capture_id"], e["local_event_seq"]))
-    selected = [
-        e
-        for e in all_events
-        if (
+
+    def wanted(e):
+        return (
             e.get("market_ticker") in {ticker, coin.cf_index, coin.coinbase_pair}
             or e.get("kind") in {"transport", "control"}
             or (e["stream"] == "kalshi_ws" and e.get("kind") == "frame" and not e.get("market_ticker"))
         )
-    ]
-    contributing = {e["capture_id"] for e in all_events}
+
+    contributing = {row["capture_id"] for row in rows if row["verified"]}
     holes |= stream_holes(index, contributing, open_ms, close_ms)
-    rating, gaps, reconnects = quality(all_events, selected, holes, open_ms, close_ms)
-    parquet_rows = []
-    for ordinal, event in enumerate(selected):
-        row = {name: event.get(name) for name in PARQUET_COLUMNS}
-        row["ord"] = ordinal
-        if row["data"] is not None:
-            row["data"] = json.dumps(row["data"], separators=(",", ":"), ensure_ascii=False)
-        parquet_rows.append(row)
+    counts = Counter()
+    selected_captures = set()
+    event_count = 0
     parquet_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = parquet_path.with_name(parquet_path.name + f".{uuid.uuid4().hex}.tmp")
     try:
-        pq.write_table(
-            pa.Table.from_pylist(parquet_rows, schema=SCHEMA),
-            temporary,
-            compression="zstd",
-            row_group_size=65536,
-        )
+        with pq.ParquetWriter(temporary, SCHEMA, compression="zstd") as writer:
+
+            def scan():
+                nonlocal event_count
+                batch = []
+                for event in window_events(index, rows, start, end):
+                    if wanted(event):
+                        row = {name: event.get(name) for name in PARQUET_COLUMNS}
+                        row["ord"] = event_count
+                        if row["data"] is not None:
+                            row["data"] = json.dumps(row["data"], separators=(",", ":"), ensure_ascii=False)
+                        batch.append(row)
+                        event_count += 1
+                        counts[event.get("msg_type") or event["kind"]] += 1
+                        selected_captures.add(event["capture_id"])
+                        if len(batch) >= 4096:
+                            writer.write_table(pa.Table.from_pylist(batch, schema=SCHEMA))
+                            batch.clear()
+                    yield event
+                if batch:
+                    writer.write_table(pa.Table.from_pylist(batch, schema=SCHEMA))
+
+            rating, gaps, reconnects = quality(scan(), wanted, holes, open_ms, close_ms)
         with temporary.open("rb+") as fh:
             os.fsync(fh.fileno())
         # Explicit rebuild revokes the completion marker before replacing its data file.
@@ -275,12 +302,12 @@ def build_window(index: FileIndex, cfg: Config, market: dict, *, rebuild=False) 
         "end_ms": end,
         "strike": market.get("strike"),
         "result": market.get("result"),
-        "event_count": len(selected),
+        "event_count": event_count,
         "gap_count": gaps,
         "reconnect_count": reconnects,
         "quality": rating,
-        "counts": dict(Counter(e.get("msg_type") or e["kind"] for e in selected)),
-        "captures": sorted({e["capture_id"] for e in selected}, key=lambda c: (captures[c], c)),
+        "counts": dict(counts),
+        "captures": sorted(selected_captures, key=lambda c: (captures[c], c)),
         "parquet": rel_parquet,
         "sha256": sha256(parquet_path),
         "size_bytes": parquet_path.stat().st_size,
@@ -323,7 +350,7 @@ def run_once(cfg: Config, *, now_ms=None, rebuild: str | None = None, engine=Non
             found = True
             if "open_ms" not in market or "close_ms" not in market:
                 continue
-            if not rebuild and now <= market["close_ms"] + POST_CLOSE_MS + cfg.settle_lag_ms:
+            if not rebuild and not window_ready(market, cfg, now):
                 continue
             meta = build_window(index, cfg, market, rebuild=bool(rebuild))
             if meta:
@@ -345,3 +372,10 @@ def run_once(cfg: Config, *, now_ms=None, rebuild: str | None = None, engine=Non
         index.close()
         if own_engine and engine is not None:
             engine.dispose()
+
+
+def window_ready(market: dict, cfg: Config, now_ms: int) -> bool:
+    if "open_ms" not in market or "close_ms" not in market:
+        return False
+    lag = 0 if market.get("result") in ("yes", "no", "void") else cfg.settle_lag_ms
+    return now_ms > market["close_ms"] + POST_CLOSE_MS + lag

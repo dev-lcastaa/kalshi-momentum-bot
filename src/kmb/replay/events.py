@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Iterator
-from typing import Any
+from pathlib import Path
+from typing import Any, BinaryIO
 
 from kmb.strategy.base import Event
 
@@ -51,8 +52,33 @@ def events_from_records(records: Iterable[dict[str, Any]]) -> Iterator[Event]:
 
 
 def read_parquet_events(path: str) -> list[Event]:
+    events = list(iter_parquet_events(path, ordered=False))
+    events.sort(key=lambda event: event.local_seq)
+    return events
+
+
+def iter_parquet_events(source: str | Path | BinaryIO, *, ordered: bool = True) -> Iterator[Event]:
     import pyarrow.parquet as pq
 
-    rows = pq.read_table(path).to_pylist()
-    rows.sort(key=lambda r: r.get("ord") or 0)
-    return [event_from_record(r) for r in rows]
+    previous = -1
+    with pq.ParquetFile(source) as parquet:
+        for batch in parquet.iter_batches(
+            batch_size=4096,
+            columns=[
+                "ord",
+                "local_event_seq",
+                "recv_wall_ms",
+                "stream",
+                "kind",
+                "msg_type",
+                "market_ticker",
+                "raw",
+                "data",
+            ],
+        ):
+            for row in batch.to_pylist():
+                event = event_from_record(row)
+                if ordered and event.local_seq <= previous:
+                    raise ValueError("replay events are not in strictly increasing order")
+                previous = event.local_seq
+                yield event

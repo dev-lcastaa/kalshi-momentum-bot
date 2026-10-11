@@ -147,9 +147,13 @@ The PostgreSQL port 5432 and data API port 8702 are bound to 192.168.1.129, alon
 8701. Keep these ports LAN/VPN-only, never port-forward. Use distinct least-privilege DB roles
 for future backend/workers; the initial `kmb` role bootstraps schema/catalog only.
 
-Normalizer runs every 900 seconds with nice +10, 1 CPU / 1 GiB. Only receipt-committed batches
+Normalizer runs every 60 seconds with nice +10, 1 CPU / 1 GiB. Archive events are
+merged by capture/sequence and written in 4096-row chunks, so full recordings do
+not need to fit in RAM. Only receipt-committed batches
 with verified checksums are indexed; archive and live WAL receipt directory are read-only.
-A window becomes eligible strictly after close + 180 seconds + 1200-second settlement lag.
+A window with a confirmed outcome becomes eligible strictly after close + 180 seconds.
+For an unconfirmed outcome, the additional 1200-second settlement lag remains.
+Processing time and upload backlog can delay visibility beyond that eligibility time.
 Window sidecars are completion markers. Normal runs never rebuild them; explicit rebuilds can
 conflict with the append-only storage2 mirror and require manual reconciliation (never automatic overwrite).
 Postgres writes are best-effort and retried for completed sidecars in later cycles.

@@ -133,6 +133,61 @@ def test_window_contract_idempotency_and_db(tmp_path):
     engine.dispose()
 
 
+def test_confirmed_outcome_does_not_wait_extra_twenty_minutes(tmp_path):
+    from kmb.normalizer.windows import window_ready
+
+    cfg, _ = archive_fixture(tmp_path)
+    cfg = replace(cfg, settle_lag_ms=1200000)
+    market = {"open_ms": OPEN, "close_ms": CLOSE, "result": "yes"}
+    assert not window_ready(market, cfg, CLOSE + 180000)
+    assert window_ready(market, cfg, CLOSE + 180001)
+    assert run_once(cfg, now_ms=CLOSE + 180001)["built"] == [TICKER]
+    market["result"] = None
+    assert not window_ready(market, cfg, CLOSE + 180001)
+    assert window_ready(market, cfg, CLOSE + 1380001)
+
+
+def test_large_window_writes_bounded_row_groups(tmp_path, monkeypatch):
+    from kmb.normalizer import windows
+
+    cfg, envelopes = archive_fixture(tmp_path)
+    template = next(e for e in envelopes if e.get("msg_type") == "orderbook_snapshot")
+
+    def large_window(*args):
+        for sequence in range(10001):
+            yield {**template, "local_event_seq": sequence}
+
+    monkeypatch.setattr(windows, "window_events", large_window)
+    assert run_once(cfg, now_ms=CLOSE + 180001)["built"] == [TICKER]
+    meta = json.loads(next(cfg.derived_root.rglob("*.window.json")).read_text())
+    parquet = pq.ParquetFile(cfg.derived_root / meta["parquet"])
+    assert meta["event_count"] == 10001
+    assert parquet.metadata.num_row_groups == 3
+    assert max(parquet.metadata.row_group(i).num_rows for i in range(3)) <= 4096
+    assert parquet.read(columns=["ord"]).column("ord").to_pylist() == list(range(10001))
+
+
+def test_stream_failure_does_not_publish_partial_window(tmp_path, monkeypatch):
+    import pytest
+
+    from kmb.normalizer import windows
+
+    cfg, envelopes = archive_fixture(tmp_path)
+    template = next(e for e in envelopes if e.get("msg_type") == "orderbook_snapshot")
+
+    def failing_window(*args):
+        for sequence in range(5000):
+            yield {**template, "local_event_seq": sequence}
+        raise RuntimeError("archive read failed")
+
+    monkeypatch.setattr(windows, "window_events", failing_window)
+    with pytest.raises(RuntimeError, match="archive read failed"):
+        run_once(cfg, now_ms=CLOSE + 180001)
+    assert not list(cfg.derived_root.rglob("*.window.json"))
+    assert not list(cfg.derived_root.rglob("*.parquet"))
+    assert not list(cfg.derived_root.rglob("*.tmp"))
+
+
 def test_quality_recovery_and_missing_book(tmp_path):
     cfg, _ = archive_fixture(tmp_path, gap=True)
     run_once(cfg, now_ms=CLOSE + 180001)
