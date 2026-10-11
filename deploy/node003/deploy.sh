@@ -9,6 +9,8 @@ NODE001="${NODE001:-192.168.1.129}"
 BACKEND_URL="${BACKEND_URL:-http://192.168.1.181:8800/health}"
 COLLECTOR_URL="${COLLECTOR_URL:-http://192.168.1.181:8710/health}"
 MCP_URL="${MCP_URL:-https://node003:8801/health}"
+# On node003 itself "node003" resolves to 127.0.1.1, but the port is published only on the LAN IP.
+MCP_RESOLVE="${MCP_RESOLVE:-node003:8801:192.168.1.181}"
 READY_TIMEOUT_S="${READY_TIMEOUT_S:-180}"
 fail() { echo "DEPLOY FAILED: $*" >&2; exit 1; }
 
@@ -70,7 +72,7 @@ echo '== start collector + workers'
 # Workers finish their current loop iteration on SIGTERM; live jobs release their key lease.
 docker compose up -d --no-build collector mcp worker-trade worker-sim
 wait_url "$COLLECTOR_URL" || fail 'collector did not become healthy'
-curl -fsS --cacert "$KMB_SECRETS_DIR/mcp_tls_cert.pem" --retry 20 --retry-connrefused --retry-delay 3 --max-time 5 "$MCP_URL" >/dev/null || fail 'MCP did not become healthy'
+curl -fsS --cacert "$KMB_SECRETS_DIR/mcp_tls_cert.pem" --resolve "$MCP_RESOLVE" --retry 20 --retry-connrefused --retry-delay 3 --max-time 5 "$MCP_URL" >/dev/null || fail 'MCP did not become healthy'
 sleep 10
 for pair in "worker-trade:$trade_workers" "worker-sim:$sim_workers"; do
     svc="${pair%%:*}" want="${pair#*:}"
