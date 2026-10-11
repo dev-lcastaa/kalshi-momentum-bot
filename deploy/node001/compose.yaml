@@ -1,0 +1,224 @@
+# node001 (192.168.1.129): raw archive ingestion.
+# Normally deployed by Jenkins (see Jenkinsfile). Manual: docker compose up -d --build
+# See README.md here for the one-time setup steps (directories, token, sentinel).
+
+# Fixed project name so Jenkins workspaces and manual runs manage the same containers.
+name: kmb-node001
+
+services:
+  ingest:
+    build:
+      context: ../..
+      dockerfile: services/ingest/Dockerfile
+      target: runtime
+    image: kmb-ingest:latest
+    container_name: kmb-ingest
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cpus: 1.0
+    mem_limit: 384m
+    environment:
+      INGEST_ARCHIVE_ROOT: /data/kalshi
+      INGEST_DB_PATH: /state/ingest.sqlite
+      INGEST_TOKEN_FILE: /run/secrets/ingest_token
+      INGEST_ARCHIVE_ID: kalshi-archive-storage1-C174-8D73
+      INGEST_EXPECTED_FS_UUID: C174-8D73
+      INGEST_EXPECTED_FSTYPE: exfat
+      INGEST_BY_UUID_DIR: /host/disk-by-uuid
+      INGEST_MIN_FREE_BYTES: "10737418240" # 10 GiB
+      INGEST_MAX_BATCH_BYTES: "8388608" # 8 MiB
+      INGEST_PORT: "8701"
+    volumes:
+      # Never let Docker create the archive dir: if the drive is missing the container must not start.
+      - type: bind
+        source: /mnt/storage1/kalshi-archive
+        target: /data/kalshi
+        bind:
+          create_host_path: false
+      # Receipt index on the ext4 SD root (SQLite must not live on exFAT).
+      - type: bind
+        source: /var/lib/kmb-ingest
+        target: /state
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /dev/disk/by-uuid
+        target: /host/disk-by-uuid
+        read_only: true
+    secrets:
+      - ingest_token
+    ports:
+      - "192.168.1.129:8701:8701"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  postgres:
+    image: postgres:16-bookworm
+    container_name: kmb-postgres
+    restart: unless-stopped
+    # Primary group 1000 makes the shared 0440 password secret readable without exposing it to others.
+    user: "999:1000"
+    shm_size: 128m
+    mem_limit: 512m
+    cpus: 1.0
+    command: ["postgres", "-c", "shared_buffers=128MB", "-c", "max_connections=50", "-c", "work_mem=2MB"]
+    environment:
+      POSTGRES_USER: kmb
+      POSTGRES_DB: kmb
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    volumes:
+      - type: bind
+        source: /var/lib/kmb-postgres
+        target: /var/lib/postgresql/data
+        bind:
+          create_host_path: false
+    secrets:
+      - db_password
+    ports:
+      - "192.168.1.129:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kmb -d kmb"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+
+  normalizer:
+    build:
+      context: ../..
+      dockerfile: services/normalizer/Dockerfile
+      target: runtime
+    image: kmb-normalizer:latest
+    container_name: kmb-normalizer
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    cpus: 1.0
+    mem_limit: 1g
+    command: ["-m", "kmb.normalizer", "loop", "--interval", "900"]
+    environment:
+      KMB_NORMALIZER_ARCHIVE_ROOT: /mnt/storage1/kalshi-archive
+      KMB_NORMALIZER_DERIVED_ROOT: /mnt/storage1/kalshi-derived
+      KMB_NORMALIZER_RECEIPTS_PATH: /receipts/ingest.sqlite
+      KMB_NORMALIZER_STATE_PATH: /state/state.sqlite
+      KMB_DB_PASSWORD_FILE: /run/secrets/db_password
+      KMB_DB_HOST: postgres
+    volumes:
+      - type: bind
+        source: /mnt/storage1/kalshi-archive
+        target: /mnt/storage1/kalshi-archive
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /mnt/storage1/kalshi-derived
+        target: /mnt/storage1/kalshi-derived
+        bind: {create_host_path: false}
+      - type: bind
+        source: /var/lib/kmb-normalizer
+        target: /state
+        bind: {create_host_path: false}
+      - type: bind
+        source: /var/lib/kmb-ingest
+        target: /receipts
+        read_only: true
+        bind: {create_host_path: false}
+    secrets: [db_password]
+    depends_on:
+      postgres: {condition: service_healthy}
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+
+  data-api:
+    image: kmb-normalizer:latest
+    container_name: kmb-data-api
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    cpus: 0.5
+    mem_limit: 256m
+    command: ["-m", "kmb.dataapi", "serve"]
+    environment:
+      KMB_DATAAPI_DERIVED_ROOT: /data/derived
+      KMB_DATAAPI_TOKEN_FILE: /run/secrets/data_api_token
+    volumes:
+      - type: bind
+        source: /mnt/storage1/kalshi-derived
+        target: /data/derived
+        read_only: true
+        bind: {create_host_path: false}
+    secrets: [data_api_token]
+    ports: ["192.168.1.129:8702:8702"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8702/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+
+  replicate:
+    image: kmb-normalizer:latest
+    profiles: [maintenance]
+    user: "1000:1000"
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    cpus: 1.0
+    mem_limit: 256m
+    command: ["-m", "kmb.replicate", "run"]
+    environment:
+      KMB_REPLICATE_RECEIPTS_PATH: /receipts/ingest.sqlite
+      KMB_REPLICATE_STATE_PATH: /state/replicate.sqlite
+    volumes:
+      - type: bind
+        source: /mnt/storage1
+        target: /mnt/storage1
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /mnt/storage2
+        target: /mnt/storage2
+        bind: {create_host_path: false}
+      - type: bind
+        source: /dev/disk/by-uuid
+        target: /dev/disk/by-uuid
+        read_only: true
+      - type: bind
+        source: /var/lib/kmb-ingest
+        target: /receipts
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /var/lib/kmb-normalizer
+        target: /state
+        bind: {create_host_path: false}
+
+# Secrets live on the host, outside any git checkout or Jenkins workspace.
+secrets:
+  ingest_token:
+    file: ${KMB_SECRETS_DIR:-/etc/kmb/secrets}/ingest_token
+  db_password:
+    file: ${KMB_SECRETS_DIR:-/etc/kmb/secrets}/db_password
+  data_api_token:
+    file: ${KMB_SECRETS_DIR:-/etc/kmb/secrets}/data_api_token

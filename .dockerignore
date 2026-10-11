@@ -1,0 +1,14 @@
+.git
+.venv
+**/__pycache__
+**/.pytest_cache
+.ruff_cache
+data
+spool
+frontend/node_modules
+deploy/**/secrets
+.env
+*.pem
+*.key
+recon-*.txt
+frontend/dist

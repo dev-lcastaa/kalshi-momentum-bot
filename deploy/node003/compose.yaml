@@ -1,0 +1,154 @@
+# node003 (192.168.1.181): live collector, market-data bus, backend + UI, and workers.
+# Normally deployed by Jenkins (see Jenkinsfile). Manual: bash deploy.sh
+# See README.md here for the one-time setup steps (directories, secrets, env file, admin user).
+#
+# Postgres, ingest and the data API run on node001 (192.168.1.129); node001 must be deployed first.
+# Memory budget (8 GB Pi, also hosts other containers): ~3.6 GB at the default worker counts.
+
+name: kmb-node003
+
+x-hardening: &hardening
+  restart: unless-stopped
+  user: "1000:1000"
+  read_only: true
+  tmpfs: [/tmp]
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "5"}
+
+x-app-env: &app-env
+  KMB_DB_HOST: ${KMB_DB_HOST:-192.168.1.129}
+  KMB_DB_PASSWORD_FILE: /run/secrets/db_password
+  KMB_VAULT_KEY_FILE: /run/secrets/vault_key
+  KMB_DATA_API_URL: ${KMB_DATA_API_URL:-http://192.168.1.129:8702}
+  KMB_DATA_API_TOKEN_FILE: /run/secrets/data_api_token
+  KMB_NATS_URL: nats://nats:4222
+  KMB_LOG_LEVEL: ${KMB_LOG_LEVEL:-INFO}
+
+services:
+  nats:
+    <<: *hardening
+    image: nats:2.10-alpine
+    container_name: kmb-nats
+    # Market data only: JetStream stream "MD" is memory-backed (1 h / 256 MB), nothing persisted.
+    command: ["-js", "-m", "8222", "--store_dir", "/tmp/jetstream"]
+    tmpfs: ["/tmp:size=64m"]
+    cpus: 0.5
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8222/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  collector:
+    <<: *hardening
+    build:
+      context: ../..
+      dockerfile: services/collector/Dockerfile
+      target: runtime
+    image: kmb-collector:latest
+    container_name: kmb-collector
+    cpus: 1.0
+    mem_limit: 384m
+    env_file:
+      - ${KMB_ENV_FILE:-/etc/kmb/node003.env}
+    environment:
+      KMB_COLLECTOR_KALSHI_ENV: ${KMB_KALSHI_ENV:-production}
+      KMB_COLLECTOR_KALSHI_PRIVATE_KEY_PATH: /run/secrets/kalshi_private_key
+      KMB_COLLECTOR_SPOOL_DIR: /var/lib/kmb-collector/spool
+      KMB_COLLECTOR_INGEST_URL: ${KMB_INGEST_URL:-http://192.168.1.129:8701}
+      KMB_COLLECTOR_INGEST_TOKEN_FILE: /run/secrets/ingest_token
+      KMB_COLLECTOR_NATS_URL: nats://nats:4222
+      KMB_COLLECTOR_COLLECTOR_ID: node003
+      KMB_DB_HOST: ${KMB_DB_HOST:-192.168.1.129}
+      KMB_DB_PASSWORD_FILE: /run/secrets/db_password
+    volumes:
+      # Durable spool on the SD card (ext4); survives node001 outages up to the spool cap.
+      - type: bind
+        source: /var/lib/kmb-collector
+        target: /var/lib/kmb-collector
+        bind: {create_host_path: false}
+    secrets: [ingest_token, db_password, kalshi_private_key]
+    ports: ["192.168.1.181:8710:8710"]
+    depends_on:
+      nats: {condition: service_healthy}
+
+  backend:
+    <<: *hardening
+    build:
+      context: ../..
+      dockerfile: services/app/Dockerfile
+      target: runtime
+    image: kmb-app:latest
+    container_name: kmb-backend
+    command: ["-m", "kmb.backend", "serve"]
+    cpus: 1.0
+    mem_limit: 512m
+    environment:
+      <<: *app-env
+      KMB_BACKEND_PORT: "8800"
+      KMB_BACKEND_COOKIE_SECURE: ${KMB_BACKEND_COOKIE_SECURE:-0}
+      KMB_COLLECTOR_STATUS_URL: http://collector:8710/status
+      KMB_INGEST_STATUS_URL: ${KMB_INGEST_STATUS_URL:-http://192.168.1.129:8701/ready}
+    secrets: [db_password, vault_key, data_api_token]
+    ports: ["192.168.1.181:8800:8800"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8800/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    depends_on:
+      nats: {condition: service_healthy}
+
+  # Long-running paper/live jobs (one job per worker; live jobs also hold a Kalshi key lease).
+  # Scale with KMB_TRADE_WORKERS as more Kalshi API keys / users are added.
+  worker-trade:
+    <<: *hardening
+    image: kmb-app:latest
+    command: ["-m", "kmb.worker", "run"]
+    deploy:
+      replicas: ${KMB_TRADE_WORKERS:-2}
+    cpus: 0.75
+    mem_limit: 512m
+    stop_grace_period: 30s
+    environment:
+      <<: *app-env
+      KMB_WORKER_KINDS: paper,live
+    secrets: [db_password, vault_key, data_api_token]
+    depends_on:
+      backend: {condition: service_healthy}
+
+  # Batch jobs: replays of recorded windows and G4 calibration of live runs.
+  worker-sim:
+    <<: *hardening
+    image: kmb-app:latest
+    command: ["-m", "kmb.worker", "run"]
+    deploy:
+      replicas: ${KMB_SIM_WORKERS:-1}
+    cpus: 1.0
+    mem_limit: 1g
+    stop_grace_period: 30s
+    environment:
+      <<: *app-env
+      KMB_WORKER_KINDS: sim,calibration
+      KMB_WINDOW_CACHE: "2"
+    secrets: [db_password, vault_key, data_api_token]
+    depends_on:
+      backend: {condition: service_healthy}
+
+# Secrets live on the host, outside any git checkout or Jenkins workspace (owner 1000, mode 0440/0400).
+secrets:
+  ingest_token:
+    file: ${KMB_SECRETS_DIR:-/etc/kmb/secrets}/ingest_token
+  db_password:
+    file: ${KMB_SECRETS_DIR:-/etc/kmb/secrets}/db_password
+  data_api_token:
+    file: ${KMB_SECRETS_DIR:-/etc/kmb/secrets}/data_api_token
+  vault_key:
+    file: ${KMB_SECRETS_DIR:-/etc/kmb/secrets}/vault_key
+  kalshi_private_key:
+    file: ${KMB_SECRETS_DIR:-/etc/kmb/secrets}/kalshi_private_key.pem

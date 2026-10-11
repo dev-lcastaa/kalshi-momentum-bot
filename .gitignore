@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# Secrets: never commit keys or env files
+.env
+.env.*
+!.env.example
+.secrets/
+*.pem
+*.key
+
+# Captured data lives on node001/node003, never in git or OneDrive
+data/
+spool/
+*.jsonl.gz
+*.parquet
+*.duckdb
+
+# Frontend
+node_modules/
+frontend/dist/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# recon output
+recon-*.txt
+deploy/**/secrets/
