@@ -7,6 +7,10 @@ dark glass style, inline SVG icons, and plain-language labels.
 
 - **Live markets** (home): Bitcoin and Ethereum stacked in full-width cards, refreshed every second, with
   current 15-minute windows, prices to beat, YES/NO costs and one graph per coin.
+  Each card separates the local-time market window and large `mm:ss` countdown
+  from three labeled tiles: Kalshi price, price to beat, and dollars above/below
+  target (or at target). The timer runs independently of network requests.
+  Stale prices remain labeled as not live and never produce a current target comparison.
   Green shows Kalshi's coin price, blue shows Coinbase's price, and a dashed gold
   line marks the price to beat. There is no separate YES-price graph.
   Charts collect up to 15 minutes while the page is open and reset when each market rolls over.
@@ -23,6 +27,9 @@ distinguished; existing permissions and safety checks still apply.
 
 The layout includes compact icon navigation on tablets and bottom navigation on phones. Controls keep
 text labels or accessible names; reduced-motion preferences are respected.
+Shared surfaces across live markets, replays, results, bots, settings, and sign-in use
+translucent dark glass, background blur, subtle highlights, and consistent borders.
+Browsers without backdrop blur use a readable dark fallback.
 
 ## Development
 

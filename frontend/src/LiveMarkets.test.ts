@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { updateLiveHistory } from './LiveMarkets';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { MarketCard, marketClock, updateLiveHistory } from './LiveMarkets';
 import type { LiveMarket, LiveSnapshot } from './api';
 
 function snapshot(ts: number, ticker = 'BTC-now'): LiveSnapshot {
@@ -20,6 +22,42 @@ describe('live market charts', () => {
     expect(next.KXETH15M.points).toHaveLength(2);
     expect(next.KXBTC15M.points[0].coinbase).toBe(62510);
     expect(next.KXETH15M.points[0].coinbase).toBe(3200);
+  });
+
+  describe('live market summary', () => {
+    it('shows an accurate countdown, clamps elapsed time, and handles rollover', () => {
+      expect(marketClock(0, 900_000, 451_000)).toMatchObject({ label: '07:29', phase: 'active' });
+      expect(marketClock(0, 900_000, 451_000).progress).toBeCloseTo(451 / 9);
+      expect(marketClock(0, 900_000, 840_000)).toMatchObject({ label: '01:00', remaining: 60 });
+      expect(marketClock(0, 900_000, 900_000)).toMatchObject({ label: '00:00', progress: 100, phase: 'ended' });
+      expect(marketClock(60_000, 960_000, 0)).toMatchObject({ label: '01:00', progress: 0, phase: 'upcoming' });
+      expect(marketClock(null, null, 0)).toMatchObject({ label: 'Waiting', progress: 0 });
+      expect(marketClock(900, 0, 0).phase).toBe('waiting');
+    });
+
+    function card(ref: string | null, strike: string | null, stale = false) {
+      const data = snapshot(451_000);
+      const market = { ...data.markets[0], ref, strike, ref_ms: stale ? 1 : 451_000 };
+      return renderToStaticMarkup(createElement(MarketCard, {
+        coin: { series: 'KXBTC15M', name: 'Bitcoin', symbol: 'BTC' },
+        market, snapshot: data, points: [], now: 451_000, failed: false,
+      }));
+    }
+
+    it('separates the time frame, timer, price, target and distance', () => {
+      const html = card('82856.85', '82897.41');
+      for (const label of ['Market time frame', 'Time remaining', '07:29', 'Kalshi price', 'Price to beat', 'Below target', '$40.56']) {
+        expect(html).toContain(label);
+      }
+      expect(card('82938', '82897.41')).toContain('Above target');
+      expect(card('82897.41', '82897.41')).toContain('At target');
+    });
+
+    it('does not label Coinbase as Kalshi or show a stale target comparison', () => {
+      expect(card(null, '82897.41')).toContain('Waiting for price');
+      expect(card('82856.85', '82897.41', true)).not.toContain('Below target');
+      expect(card('82856.85', null)).toContain('Needs a live Kalshi price and target');
+    });
   });
   it('bounds chart history and does not add duplicate times', () => {
     let history = {};

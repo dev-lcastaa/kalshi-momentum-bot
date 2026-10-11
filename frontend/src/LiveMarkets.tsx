@@ -121,39 +121,59 @@ function PriceGraph({ points, label, strike, ticker }: {
   return <div className="live-price-graph" role="img" aria-label={label} ref={host} />;
 }
 
-function MarketCard({ coin, market, snapshot, points, now, failed }: {
+export function marketClock(open: number | null, close: number | null, now: number) {
+  if (open === null || close === null || close <= open) return { label: 'Waiting', remaining: null, progress: 0, phase: 'waiting' };
+  const phase = now < open ? 'upcoming' : now >= close ? 'ended' : 'active';
+  const remaining = Math.max(0, Math.ceil(((phase === 'upcoming' ? open : close) - now) / 1000));
+  return {
+    label: phase === 'ended' ? '00:00' : `${Math.floor(remaining / 60).toString().padStart(2, '0')}:${String(remaining % 60).padStart(2, '0')}`,
+    remaining, phase, progress: Math.max(0, Math.min(100, (now - open) / (close - open) * 100)),
+  };
+}
+
+export function MarketCard({ coin, market, snapshot, points, now, failed }: {
   coin: typeof COINS[number]; market: LiveMarket | undefined; snapshot: LiveSnapshot | null;
   points: Sample[]; now: number; failed: boolean;
 }) {
   const ended = market?.close_ms != null && now >= market.close_ms;
-  const live = !failed && !!snapshot?.kalshi_connected && !!market?.market_ticker && !ended;
-  const remaining = market?.close_ms == null ? null : Math.max(0, Math.ceil((market.close_ms - now) / 1000));
+  const clock = marketClock(market?.open_ms ?? null, market?.close_ms ?? null, now);
+  const live = !failed && !!snapshot?.kalshi_connected && !!market?.market_ticker && clock.phase === 'active';
   const noAsk = market?.yes_bid == null ? null : (1 - Number(market.yes_bid)).toFixed(4);
   const referenceFresh = live && market?.ref_ms != null && now - market.ref_ms < 30_000;
-  const hasReference = market?.ref != null;
   const difference = referenceFresh && market?.ref != null && market.strike != null ? Number(market.ref) - Number(market.strike) : null;
+  const direction = difference === null ? 'waiting' : difference > 0 ? 'above' : difference < 0 ? 'below' : 'equal';
   return <section className="panel live-market-card" aria-label={`${coin.name} live market`}>
     <div className="live-market-heading">
-      <div className="market-cell"><span className={`coin-badge ${coin.symbol === 'ETH' ? 'eth' : ''}`}>{coin.symbol}</span><div><h2>{coin.name}</h2><small>15-minute market</small></div></div>
-      <span className={`tag ${live ? 'good' : ''}`}>{live ? 'Live' : market?.market_ticker ? 'Updates paused' : 'Waiting for market'}</span>
+      <div className="market-cell"><span className={`coin-badge ${coin.symbol === 'ETH' ? 'eth' : ''}`}>{coin.symbol}</span><div><h2>{coin.name}</h2><small>15-minute prediction market</small></div></div>
+      <span className={`tag live-status ${live ? 'good' : ''}`}><i />{live ? 'Live' : ended ? 'Market ended' : clock.phase === 'upcoming' ? 'Opens soon' : market?.market_ticker ? 'Updates paused' : 'Waiting for market'}</span>
     </div>
-    <div className="live-window">
-      <span>{market?.open_ms != null && market.close_ms != null
-        ? `${new Date(market.open_ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} – ${new Date(market.close_ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
-        : 'Looking for the current market...'}</span>
-      <b>{remaining === null ? '' : remaining === 0 ? 'Switching to the next market...' : `${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, '0')} left`}</b>
+    <div className="live-session">
+      <div className="live-timeframe"><span className="live-label"><Icon name="clock" /> Market time frame</span>
+        <strong>{market?.open_ms != null && market.close_ms != null
+          ? `${new Date(market.open_ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} – ${new Date(market.close_ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+          : 'Looking for the current market...'}</strong><small>Your local time · 15 minutes</small>
+      </div>
+      <div className={`live-countdown ${clock.phase === 'active' && clock.remaining !== null && clock.remaining <= 60 ? 'closing' : ''}`}>
+        <span className="live-label">{clock.phase === 'upcoming' ? 'Starts in' : 'Time remaining'}</span>
+        <strong aria-label={`${coin.name} countdown`}>{clock.label}</strong>
+        <small>{ended ? 'Waiting for the next market' : clock.phase === 'waiting' ? 'Waiting for market times' : 'minutes : seconds'}</small>
+      </div>
+      <div className="live-time-track" role="progressbar" aria-label={`${coin.name} market time elapsed`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(clock.progress)}><span style={{ width: `${clock.progress}%` }} /></div>
     </div>
-    <div className="live-price-hero">
-      <div><small>{hasReference ? 'Kalshi price' : 'Coinbase price'}</small><strong>{dollars(hasReference ? market?.ref : market?.coinbase)}</strong><small>{age(hasReference ? market?.ref_ms : market?.coinbase_ms, now)}{snapshot && !(hasReference ? snapshot.kalshi_connected : snapshot.coinbase_connected) ? ' · Connection lost' : ''}</small></div>
-      <div className="live-target"><small>Price to beat</small><b>{dollars(market?.strike)}</b>
-        {difference !== null ? <span className={`live-direction ${difference >= 0 ? 'above' : 'below'}`}>{dollars(String(Math.abs(difference)))} {difference >= 0 ? 'above' : 'below'} the price to beat</span> : <span className="live-direction">Waiting for Kalshi's price</span>}
+    <div className="live-price-summary">
+      <div className="live-price-tile"><span className="live-label"><span className="source-dot" /> Kalshi price</span><strong>{dollars(market?.ref)}</strong><small>{age(market?.ref_ms, now)}{!referenceFresh && market?.ref != null ? ' · Not live' : ''}</small></div>
+      <div className="live-price-tile live-target"><span className="live-label"><Icon name="target" /> Price to beat</span><strong>{dollars(market?.strike)}</strong><small>The target for this market</small></div>
+      <div className={`live-price-tile live-distance ${direction}`}>
+        <span className="live-label"><Icon name={direction === 'below' ? 'down' : direction === 'above' ? 'up' : 'target'} /> {direction === 'above' ? 'Above target' : direction === 'below' ? 'Below target' : direction === 'equal' ? 'At target' : 'Distance to target'}</span>
+        <strong>{difference === null ? 'Waiting' : dollars(String(Math.abs(difference)))}</strong>
+        <small>{difference === null ? 'Needs a live Kalshi price and target' : direction === 'equal' ? 'Kalshi price matches the price to beat' : `${direction === 'above' ? 'Higher' : 'Lower'} than the price to beat right now`}</small>
       </div>
     </div>
-    <div className="live-graph-controls">
-      <h3>Price movement</h3><span>{live ? 'Updates every second' : 'Waiting for updates'}</span>
-    </div>
-    <div className="live-graph-legend"><span className="green">Kalshi price</span><span className="blue">Coinbase price</span><span className="gold">Price to beat</span></div>
+    <div className="live-chart-section"><div className="live-graph-controls">
+      <h3><Icon name="chart" /> Price movement</h3><span>{live ? 'Refreshes every second' : 'Waiting for updates'}</span>
+    </div><div className="live-graph-legend"><span className="green">Kalshi</span><span className="blue">Coinbase</span><span className="gold">Price to beat</span></div>
     <PriceGraph points={points} strike={market?.strike ?? null} ticker={market?.market_ticker ?? null} label={`${coin.name} Kalshi and Coinbase live price graph`} />
+    </div>
     <div className="live-contract-prices">
       <div><small>YES costs</small><strong>{market?.yes_ask == null ? 'Waiting' : formatCents(market.yes_ask)}</strong></div>
       <div><small>NO costs</small><strong>{noAsk === null ? 'Waiting' : formatCents(noAsk)}</strong></div>
@@ -175,6 +195,10 @@ export default function LiveMarkets() {
   const [history, setHistory] = useState<LiveHistory>({});
   const [error, setError] = useState('');
   const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout>;

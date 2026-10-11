@@ -1,6 +1,10 @@
-export type IconName = 'replay' | 'chart' | 'bot' | 'key' | 'settings' | 'play' | 'pause' | 'back' | 'forward' | 'refresh' | 'plus' | 'shield' | 'arrow' | 'close' | 'user' | 'logout' | 'sparkles';
+export type IconName = 'replay' | 'chart' | 'bot' | 'key' | 'settings' | 'play' | 'pause' | 'back' | 'forward' | 'refresh' | 'plus' | 'shield' | 'arrow' | 'close' | 'user' | 'logout' | 'sparkles' | 'clock' | 'target' | 'up' | 'down';
 
 const paths: Record<IconName, string> = {
+  clock: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0M12 7v5l3 2',
+  target: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0M12 10v4M10 12h4',
+  up: 'M12 20V4M5 11l7-7 7 7',
+  down: 'M12 4v16M5 13l7 7 7-7',
   replay: 'M3 11a9 9 0 1 1 2.7 7M3 4v7h7M10 8l6 4-6 4z',
   chart: 'M4 3v17h17M7 14l4-4 4 3 5-7',
   bot: 'M12 3v3M10 3h4M6 7h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2zM8 11v2M16 11v2M9 17h6M1 11v5M23 11v5',
