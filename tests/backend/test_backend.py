@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import httpx
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -74,6 +75,34 @@ def test_auth_flow_and_csrf(env):
     assert c.post("/api/auth/logout", headers={"X-KMB-CSRF": csrf}).status_code == 204
     assert c.get("/api/auth/me").status_code == 401
     assert r.headers["x-frame-options"] == "DENY"
+
+
+def test_live_markets_requires_login_and_proxies_both_coins(env, monkeypatch):
+    app, _ = env
+    assert TestClient(app).get("/api/live-markets").status_code == 401
+    client = login(app, "bob", USER_PW)
+    assert client.get("/api/live-markets").status_code == 503
+    app.state.kmb.settings.collector_status_url = "http://collector:8710/status"
+    payload = {"ts_ms": 123, "kalshi_connected": True, "coinbase_connected": True,
+               "markets": [{"series_ticker": "KXBTC15M"}, {"series_ticker": "KXETH15M"}]}
+    original = httpx.AsyncClient
+
+    def handler(request):
+        assert str(request.url) == "http://collector:8710/live-markets"
+        return httpx.Response(200, json=payload)
+
+    monkeypatch.setattr(httpx, "AsyncClient",
+                        lambda **kwargs: original(transport=httpx.MockTransport(handler), **kwargs))
+    assert client.get("/api/live-markets").json() == payload
+
+
+def test_live_markets_reports_collector_failure(env, monkeypatch):
+    app, _ = env
+    app.state.kmb.settings.collector_status_url = "http://collector:8710/status"
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: original(
+        transport=httpx.MockTransport(lambda request: httpx.Response(500)), **kwargs))
+    assert login(app, "bob", USER_PW).get("/api/live-markets").status_code == 503
 
 
 def test_login_rate_limit(env):

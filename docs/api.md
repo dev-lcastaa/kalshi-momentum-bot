@@ -21,6 +21,19 @@ response.
 
 Errors are `{detail: string}` with a suitable status (400/401/403/404/409/422/503).
 
+## Live markets (read-only)
+
+Authenticated `GET /api/live-markets` returns `{ts_ms, kalshi_connected, coinbase_connected, markets}`.
+The backend proxies the collector's `/live-markets` endpoint directly, independent of NATS delivery.
+Each configured coin has an entry, including when no current market is available:
+`{series_ticker, market_ticker, open_ms, close_ms, strike, status, yes_bid, yes_ask, last,
+quote_ms, price_ms, ref, ref_ms, coinbase, coinbase_ms}`.
+Missing fields are null, never another coin's prices. Only the current window
+(`open_ms <= ts_ms < close_ms`) is selected. Prices are decimal strings in dollars;
+the UI derives the NO offer as `1 - yes_bid`. Timestamp fields indicate when each
+source last updated; disconnected feeds do not imply current prices.
+Collector failures return 503 rather than cached success. No trading key is needed by viewers.
+
 ## Users (admin)
 
 | Method | Path | Body | Response |

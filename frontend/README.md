@@ -5,6 +5,12 @@ dark glass style, inline SVG icons, and plain-language labels.
 
 ## Interface
 
+- **Live markets** (home): Bitcoin and Ethereum stacked in full-width cards, refreshed every second, with
+  current 15-minute windows, prices to beat, YES/NO costs and one graph per coin.
+  Green shows Kalshi's coin price, blue shows Coinbase's price, and a dashed gold
+  line marks the price to beat. There is no separate YES-price graph.
+  Charts collect up to 15 minutes while the page is open and reset when each market rolls over.
+  Disconnections and missing prices are shown explicitly; viewing does not place orders.
 - **Market replays**: choose a recording, then play, pause, rewind, or change playback speed.
 - **Results**: see profit/loss, orders placed, and completed trades.
 - **My bots**: test past markets, practice live with pretend money, or explicitly confirm real-money trading.

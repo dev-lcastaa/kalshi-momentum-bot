@@ -5,6 +5,7 @@ import { formatCents, formatDecimal } from './helpers';
 import { api, type Bot, type Frame, type Job, type Overview, type User, type WindowRecord, wsUrl } from './api';
 import { Icon, type IconName } from './Icon';
 import { APP_NAME, friendlyLabel, marketName, parameterHelp } from './language';
+import LiveMarkets from './LiveMarkets';
 const money = (value: unknown, digits = 2) => { if (value == null || value === '')
     return 'N/A'; const fixed = formatDecimal(String(value), digits); const [whole, fraction = ''] = fixed.split('.'); return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (digits ? '.' + fraction : ''); };
 const cents = (value: string | null | undefined) => formatCents(value);
@@ -498,14 +499,14 @@ catch (e) {
 function App() { const [user, setUser] = useState<User | null>(null), [ready, setReady] = useState(false), [menu, setMenu] = useState(false), [toast, setToast] = useState(''); const location = useLocation(), navigate = useNavigate(); const notify = useCallback((text: string) => { setToast(text); window.setTimeout(() => setToast(''), 3500); }, []); useEffect(() => { api<{
     user: User;
     csrf: string;
-}>('/api/auth/me').then(r => { setUser(r.user); sessionStorage.setItem('csrf', r.csrf); }).catch(() => { }).finally(() => setReady(true)); const expired = () => { setUser(null); navigate('/login'); }; const failed = (e: Event) => notify((e as CustomEvent<string>).detail); window.addEventListener('auth:expired', expired); window.addEventListener('api:error', failed); return () => { window.removeEventListener('auth:expired', expired); window.removeEventListener('api:error', failed); }; }, []); const login = (u: User, csrf: string) => { sessionStorage.setItem('csrf', csrf); setUser(u); navigate('/windows'); }; const logout = async () => { try {
+}>('/api/auth/me').then(r => { setUser(r.user); sessionStorage.setItem('csrf', r.csrf); }).catch(() => { }).finally(() => setReady(true)); const expired = () => { setUser(null); navigate('/login'); }; const failed = (e: Event) => notify((e as CustomEvent<string>).detail); window.addEventListener('auth:expired', expired); window.addEventListener('api:error', failed); return () => { window.removeEventListener('auth:expired', expired); window.removeEventListener('api:error', failed); }; }, []); const login = (u: User, csrf: string) => { sessionStorage.setItem('csrf', csrf); setUser(u); navigate('/live'); }; const logout = async () => { try {
     await api('/api/auth/logout', { method: 'POST' });
 }
 catch { } sessionStorage.removeItem('csrf'); setUser(null); navigate('/login'); }; if (!ready)
     return <div className="loading full"><i />Connecting...</div>; if (!user)
     return location.pathname === '/login' ? <Login onLogin={login}/> : <Navigate to="/login" replace/>; if (location.pathname === '/login')
-    return <Navigate to="/windows" replace/>;
-    const nav: [string, string, IconName][] = [['/windows', 'Market replays', 'replay'], ['/runs', 'Results', 'chart'], ['/bots', 'My bots', 'bot'], ['/keys', 'Kalshi connection', 'key'], ['/admin', 'Settings', 'settings']];
+    return <Navigate to="/live" replace/>;
+    const nav: [string, string, IconName][] = [['/live', 'Live markets', 'chart'], ['/windows', 'Market replays', 'replay'], ['/runs', 'Results', 'chart'], ['/bots', 'My bots', 'bot'], ['/keys', 'Kalshi connection', 'key'], ['/admin', 'Settings', 'settings']];
     return <div className="app-shell">
         <a className="skip-link" href="#main-content">Skip to content</a>
         <aside className="sidebar"><Link className="logo" to="/windows" aria-label={APP_NAME}><span className="brand-mark small"><Icon name="sparkles" /></span><span className="brand-name">AQLab<small>Kalshi Scalper Center</small></span></Link><div className="nav-label">YOUR SPACE</div><nav aria-label="Main navigation">{nav.filter(([path]) => path !== '/admin' || user.role === 'admin').map(([path, label, icon]) => <Link key={path} aria-label={label} title={label} aria-current={location.pathname.startsWith(path) ? 'page' : undefined} className={location.pathname.startsWith(path) ? 'active' : ''} to={path}><Icon name={icon} className="nav-icon" /><span>{label}</span></Link>)}</nav><div className="sidebar-foot"><Icon name="shield" /><b>Practice first.</b><small>Real-money trades can lose money. You decide when to start.</small></div></aside>
@@ -516,5 +517,5 @@ catch { } sessionStorage.removeItem('csrf'); setUser(null); navigate('/login'); 
 }
 catch (e) {
     notify((e as Error).message);
-} }}><Icon name="key" /> Change password</button><button onClick={logout}><Icon name="logout" /> Sign out</button></div>}</div></header><div className="page"><Routes><Route path="/" element={<Navigate to="/windows"/>}/><Route path="/windows" element={<Windows />}/><Route path="/replay/:windowId" element={<Replay />}/><Route path="/runs" element={<Runs />}/><Route path="/runs/:id" element={<RunDetail />}/><Route path="/bots" element={<Bots user={user} notify={notify}/>}/><Route path="/keys" element={<Keys notify={notify}/>}/><Route path="/admin" element={user.role === 'admin' ? <Admin notify={notify}/> : <Navigate to="/windows"/>}/><Route path="*" element={<Navigate to="/windows"/>}/></Routes></div></main>{toast && <div className="toast" role="status">{toast}</div>}</div>; }
+} }}><Icon name="key" /> Change password</button><button onClick={logout}><Icon name="logout" /> Sign out</button></div>}</div></header><div className="page"><Routes><Route path="/" element={<Navigate to="/live"/>}/><Route path="/live" element={<LiveMarkets />}/><Route path="/windows" element={<Windows />}/><Route path="/replay/:windowId" element={<Replay />}/><Route path="/runs" element={<Runs />}/><Route path="/runs/:id" element={<RunDetail />}/><Route path="/bots" element={<Bots user={user} notify={notify}/>}/><Route path="/keys" element={<Keys notify={notify}/>}/><Route path="/admin" element={user.role === 'admin' ? <Admin notify={notify}/> : <Navigate to="/windows"/>}/><Route path="*" element={<Navigate to="/live"/>}/></Routes></div></main>{toast && <div className="toast" role="status">{toast}</div>}</div>; }
 export default App;

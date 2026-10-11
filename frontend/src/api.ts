@@ -1,4 +1,11 @@
 export type User={id:string;username:string;role:'admin'|'user';is_active:boolean;live_enabled:boolean;created_at:string};
+export type LiveMarket = {
+ series_ticker:string;market_ticker:string|null;open_ms:number|null;close_ms:number|null;
+ strike:string|null;status:string;yes_bid:string|null;yes_ask:string|null;last:string|null;
+ quote_ms:number|null;price_ms:number|null;ref:string|null;ref_ms:number|null;
+ coinbase:string|null;coinbase_ms:number|null;
+};
+export type LiveSnapshot={ts_ms:number;kalshi_connected:boolean;coinbase_connected:boolean;markets:LiveMarket[]};
 export type WindowRecord={window_id:string;market_ticker:string;series_ticker:string;open_time:string;close_time:string;result:'yes'|'no'|null;strike:string;event_count:number;gap_count:number;quality:'ok'|'degraded'|'bad'|'unknown';size_bytes:number};
 export type Point={ts_ms:number;yes_bid:string|null;yes_ask:string|null;mid:string|null;last:string|null;volume:string|null;ref:string|null;coinbase:string|null};
 export type Trade={ts_ms:number;price:string;count:string;taker_side:'yes'|'no'};

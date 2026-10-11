@@ -954,6 +954,25 @@ async def status(request: Request, user: CurrentUser) -> dict[str, Any]:
     return await _status(request, user)
 
 
+@opsr.get("/live-markets")
+async def live_markets(request: Request, user: CurrentUser) -> dict[str, Any]:
+    url = ctx_of(request).settings.collector_status_url
+    if not url:
+        raise HTTPException(503, "Live market recording is not configured")
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            response = await client.get(url.rsplit("/", 1)[0] + "/live-markets")
+            response.raise_for_status()
+            data = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        log.warning("Live market view unavailable: %s", exc)
+        raise HTTPException(503, "Cannot reach live markets. Retrying shortly.") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("markets"), list):
+        log.error("Collector returned an invalid live market view")
+        raise HTTPException(502, "Live market data is not available")
+    return data
+
+
 @opsr.get("/fidelity")
 def fidelity(db: DB, user: CurrentUser, limit: int = Query(50, ge=1, le=500)) -> list[dict[str, Any]]:
     rows = db.scalars(select(FidelityReport).order_by(FidelityReport.id.desc()).limit(limit))

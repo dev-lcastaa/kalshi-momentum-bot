@@ -25,6 +25,7 @@ from .coinbase_feed import CoinbaseFeed
 from .config import CollectorConfig
 from .db_sink import DatabaseSink
 from .kalshi_feed import KalshiFeed
+from .live import LiveMarkets
 from .spool import Spool
 from .status import create_status_app
 from .uploader import BatchUploader
@@ -56,12 +57,14 @@ class CollectorApp:
         self._stop = asyncio.Event()
         self._server: uvicorn.Server | None = None
         self._pending_drop_count = 0
+        self.live = LiveMarkets()
 
     def emit(self, envelope: dict[str, Any]) -> None:
         stored = self.spool.append(envelope)
         self.stream_counts[envelope["stream"]] = self.stream_counts.get(envelope["stream"], 0) + 1
         self.stream_last_wall[envelope["stream"]] = envelope["recv_wall_ms"]
         self.bus.publish(envelope)
+        self.live.apply(envelope)
         if not stored:
             logger.error("spool at capacity; capture event dropped (%s)", envelope["stream"])
             self._pending_drop_count += 1
@@ -183,6 +186,15 @@ class CollectorApp:
         )
         return recent and self.spool.writable()
 
+    def live_markets(self) -> dict[str, Any]:
+        return self.live.snapshot(
+            self.kalshi.markets if self.kalshi else {},
+            self.config.series,
+            now_ms=int(time.time() * 1000),
+            kalshi_connected=bool(self.kalshi and self.kalshi.ws.connected.is_set()),
+            coinbase_connected=self.coinbase.connected,
+        )
+
     async def run(self) -> None:
         self.config.check()
         if self.db is not None:
@@ -275,7 +287,7 @@ class CollectorApp:
             await asyncio.sleep(30)
 
     async def _serve_status(self) -> None:
-        app = create_status_app(self.status, self.ready)
+        app = create_status_app(self.status, self.ready, self.live_markets)
         config = uvicorn.Config(app, host="0.0.0.0", port=self.config.status_port, log_level="warning")
         self._server = uvicorn.Server(config)
         await self._server.serve()
