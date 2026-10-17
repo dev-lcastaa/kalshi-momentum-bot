@@ -26,7 +26,7 @@ OPEN = 1767285900000
 CLOSE = OPEN + 900000
 
 
-def archive_fixture(root: Path, *, gap=False, recovered=True):
+def archive_fixture(root: Path, *, gap=False, recovered=True, ws_book=True):
     archive = root / "archive"
     archive.mkdir()
     (archive / SENTINEL_NAME).write_text("test", encoding="utf-8")
@@ -59,9 +59,21 @@ def archive_fixture(root: Path, *, gap=False, recovered=True):
         }
     }
     emit(OPEN - 60000, json.dumps(market), stream="kalshi_rest", kind="rest", msg_type="rest.market")
-    emit(
-        OPEN, json.dumps({"type": "orderbook_snapshot", "sid": 1, "seq": 1, "msg": {"market_ticker": TICKER}})
-    )
+    if ws_book:
+        emit(
+            OPEN,
+            json.dumps({"type": "orderbook_snapshot", "sid": 1, "seq": 1, "msg": {"market_ticker": TICKER}}),
+        )
+    else:
+        book = {"orderbook_fp": {"yes_dollars": [["0.5000", "10"]], "no_dollars": [["0.4800", "10"]]}}
+        emit(
+            OPEN,
+            json.dumps(book),
+            stream="kalshi_rest",
+            kind="rest",
+            ticker=TICKER,
+            msg_type="rest.orderbook",
+        )
     emit(OPEN + 100, json.dumps({"type": "cfbenchmarks_value", "msg": {"index_id": "BRTI"}}))
     emit(OPEN + 200, json.dumps({"type": "match", "product_id": "BTC-USD"}), stream="coinbase_ws")
     emit(OPEN + 300, json.dumps({"type": "ticker", "msg": {"market_ticker": "OTHER"}}))
@@ -254,6 +266,14 @@ def test_replay_capture_order_and_unrecovered_gap(tmp_path):
     cfg, _ = archive_fixture(tmp_path, gap=True, recovered=False)
     run_once(cfg, now_ms=CLOSE + 180001)
     meta = json.loads(next(cfg.derived_root.rglob("*.window.json")).read_text())
+    assert meta["quality"] == "bad"
+
+
+def test_rest_only_book_is_bad(tmp_path):
+    cfg, _ = archive_fixture(tmp_path, ws_book=False)
+    run_once(cfg, now_ms=CLOSE + 180001)
+    meta = json.loads(next(cfg.derived_root.rglob("*.window.json")).read_text())
+    assert meta["counts"]["rest.orderbook"] == 1
     assert meta["quality"] == "bad"
 
 

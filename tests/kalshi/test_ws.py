@@ -173,6 +173,38 @@ async def test_add_and_remove_markets_use_update_subscription_with_acked_sids():
     assert sub.sids == {}
 
 
+async def test_market_updates_send_one_command_per_channel_sid():
+    ws = FakeWs(
+        [
+            json.dumps({"id": 1, "type": "subscribed", "msg": {"channel": "orderbook_delta", "sid": 4}}),
+            json.dumps({"id": 1, "type": "subscribed", "msg": {"channel": "ticker", "sid": 2}}),
+            json.dumps({"id": 1, "type": "subscribed", "msg": {"channel": "trade", "sid": 7}}),
+        ]
+    )
+    client = KalshiWsClient("wss://x", None, connector=FakeConnector([ws]))
+    sub = Subscription("markets", ["orderbook_delta", "ticker", "trade"], market_tickers=["A"])
+    await client.subscribe(sub)
+    task = asyncio.create_task(client.run_forever())
+    await wait_for(lambda: len(sub.sids) == 3)
+
+    await client.add_markets("markets", ["B"])
+    await client.remove_markets("markets", ["A"])
+    client.stop()
+    await task
+
+    updates = [msg for msg in ws.sent if msg["cmd"] == "update_subscription"]
+    assert [(msg["params"]["sids"], msg["params"]["action"]) for msg in updates] == [
+        ([2], "add_markets"),
+        ([4], "add_markets"),
+        ([7], "add_markets"),
+        ([2], "delete_markets"),
+        ([4], "delete_markets"),
+        ([7], "delete_markets"),
+    ]
+    assert all(len(msg["params"]["sids"]) == 1 for msg in updates)
+    assert [msg["params"]["market_tickers"] for msg in updates] == [["B"]] * 3 + [["A"]] * 3
+
+
 async def test_markets_added_while_disconnected_are_included_on_next_subscribe():
     client = KalshiWsClient("wss://x", None, connector=FakeConnector([]))
     sub = Subscription("tick", ["ticker"], market_tickers=["A"])

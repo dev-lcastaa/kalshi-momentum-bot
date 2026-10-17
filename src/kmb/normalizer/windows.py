@@ -159,7 +159,8 @@ def quality(
                 pending.add(key)
             last_seq[seq_key] = event["seq"]
         if selected(event):
-            if msg in {"orderbook_snapshot", "orderbook_delta", "rest.orderbook"}:
+            # Periodic REST snapshots cannot reconstruct a book between polls, so require the stream.
+            if event["stream"] == "kalshi_ws" and msg in {"orderbook_snapshot", "orderbook_delta"}:
                 has_book = True
             if msg in {"orderbook_snapshot", "rest.orderbook"}:
                 pending.discard((event["capture_id"], "kalshi_ws"))

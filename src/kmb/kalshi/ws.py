@@ -4,7 +4,7 @@ Built for exact capture:
 - every inbound frame is handed to `on_frame` (raw text + receive timestamps + conn_id) before parsing;
 - connects, disconnects, outbound commands and sequence gaps are reported to `on_transport`;
 - subscriptions are declarative: they are re-sent on every reconnect and their server `sid`s are tracked so
-  `add_markets`/`remove_markets` can use `update_subscription`;
+  `add_markets`/`remove_markets` can use `update_subscription` (one command per sid, as Kalshi requires);
 - per-sid `seq` gaps trigger a reconnect by default, which forces fresh snapshots.
 """
 
@@ -201,8 +201,10 @@ class KalshiWsClient:
             sub.market_tickers = [t for t in current if t not in changed]
         if not changed or self._ws is None or not sub.sids:
             return
-        params = {"sids": sorted(sub.sids.values()), "market_tickers": changed, "action": action}
-        await self.send_command("update_subscription", params, sub_key=key)
+        # Kalshi rejects update_subscription unless it targets exactly one sid (error code 12).
+        for sid in sorted(sub.sids.values()):
+            params = {"sids": [sid], "market_tickers": changed, "action": action}
+            await self.send_command("update_subscription", params, sub_key=key)
 
     async def _send_subscribe(self, sub: Subscription) -> None:
         sub.sids.clear()
