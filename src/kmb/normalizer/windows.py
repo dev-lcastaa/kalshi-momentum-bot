@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from kmb.db import init_db, make_engine
 from kmb.db.models import CaptureWindow, MarketResult
-from kmb.envelope.event import ms_to_utc_iso
+from kmb.envelope.event import STREAM_COINBASE_WS, ms_to_utc_iso
 from kmb.envelope.windows import (
     PARQUET_COLUMNS,
     POST_CLOSE_MS,
@@ -112,14 +112,17 @@ def stream_holes(index: FileIndex, captures: set[str], open_ms: int, close_ms: i
 
     with sqlite3.connect(index.receipts.resolve().as_uri() + "?mode=ro", uri=True) as conn:
         for first, last in conn.execute(
-            "SELECT first_recv_utc,last_recv_utc FROM batches WHERE status != 'committed'"
+            "SELECT first_recv_utc,last_recv_utc FROM batches WHERE status != 'committed' AND stream != ?",
+            (STREAM_COINBASE_WS,),
         ):
             if timestamp(first) <= close_ms and timestamp(last) >= open_ms:
                 return True
     for capture in captures:
         previous = {}
         for row in index.conn.execute(
-            "SELECT * FROM files WHERE active=1 AND capture_id=? ORDER BY stream,first_stream_seq", (capture,)
+            "SELECT * FROM files WHERE active=1 AND capture_id=? AND stream != ? "
+            "ORDER BY stream,first_stream_seq",
+            (capture, STREAM_COINBASE_WS),
         ):
             prev = previous.get(row["stream"])
             if prev is None:
@@ -145,7 +148,8 @@ def quality(
         inside = open_ms <= event["recv_wall_ms"] <= close_ms
         key = (event["capture_id"], event["stream"])
         kind, msg = event.get("kind"), event.get("msg_type")
-        if kind == "transport" and inside:
+        # Only Kalshi transport health grades a window; auxiliary feeds (Coinbase) must not downgrade it.
+        if kind == "transport" and inside and event["stream"] == "kalshi_ws":
             action = (event.get("data") or {}).get("event")
             if action in {"gap", "disconnected"}:
                 gaps += action == "gap"
@@ -238,7 +242,11 @@ def build_window(index: FileIndex, cfg: Config, market: dict, *, rebuild=False) 
     start, end = open_ms - PRE_OPEN_MS, close_ms + POST_CLOSE_MS
     rows = index.files(start, end)
     holes = any(
-        not row["verified"] and row["min_ms"] <= close_ms and row["max_ms"] >= open_ms for row in rows
+        not row["verified"]
+        and row["stream"] != STREAM_COINBASE_WS
+        and row["min_ms"] <= close_ms
+        and row["max_ms"] >= open_ms
+        for row in rows
     )
     captures = index.capture_starts()
 

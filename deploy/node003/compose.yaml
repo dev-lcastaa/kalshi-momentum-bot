@@ -51,8 +51,8 @@ services:
       target: runtime
     image: kmb-collector:latest
     container_name: kmb-collector
-    cpus: 1.0
-    mem_limit: 384m
+    cpus: 2.0
+    mem_limit: 512m
     env_file:
       - ${KMB_ENV_FILE:-/etc/kmb/node003.env}
     environment:

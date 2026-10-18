@@ -12,6 +12,7 @@ import uvicorn
 from kmb.envelope import (
     KIND_CONTROL,
     SOURCE_COLLECTOR,
+    STREAM_COINBASE_WS,
     STREAM_CONTROL,
     Sequencer,
     make_envelope,
@@ -47,6 +48,8 @@ class CollectorApp:
             cap_bytes=config.spool_cap_bytes,
             max_batch_bytes=config.batch_max_bytes,
             max_age_seconds=config.batch_max_age_seconds,
+            defer_seal=True,
+            shed_streams=frozenset({STREAM_COINBASE_WS}),
         )
         self.uploader = BatchUploader(self.spool, config.ingest_url, config.ingest_token or "")
         self.bus = NatsPublisher(config.nats_url)
@@ -225,6 +228,7 @@ class CollectorApp:
             asyncio.create_task(self.kalshi.run(), name="kalshi-feed"),
             asyncio.create_task(self.coinbase.run(), name="coinbase-feed"),
             asyncio.create_task(self.uploader.run(), name="uploader"),
+            asyncio.create_task(self._sealer_loop(), name="spool-sealer"),
             asyncio.create_task(self.bus.run(), name="nats"),
             asyncio.create_task(self._clock_loop(), name="clock"),
             asyncio.create_task(self._status_db_loop(), name="db-status"),
@@ -266,6 +270,14 @@ class CollectorApp:
             await self.uploader.close()
             if self.db is not None:
                 await asyncio.to_thread(self.db.close)
+
+    async def _sealer_loop(self) -> None:
+        while True:
+            try:
+                await asyncio.to_thread(self.spool.seal_ready)
+            except Exception:
+                logger.exception("spool sealing failed; will retry")
+            await asyncio.sleep(0.25)
 
     async def _clock_loop(self) -> None:
         while True:

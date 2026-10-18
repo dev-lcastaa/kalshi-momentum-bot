@@ -26,7 +26,7 @@ OPEN = 1767285900000
 CLOSE = OPEN + 900000
 
 
-def archive_fixture(root: Path, *, gap=False, recovered=True, ws_book=True):
+def archive_fixture(root: Path, *, gap=False, recovered=True, ws_book=True, coinbase_outage=False):
     archive = root / "archive"
     archive.mkdir()
     (archive / SENTINEL_NAME).write_text("test", encoding="utf-8")
@@ -89,6 +89,8 @@ def archive_fixture(root: Path, *, gap=False, recovered=True, ws_book=True):
                     {"type": "orderbook_snapshot", "sid": 2, "seq": 1, "msg": {"market_ticker": TICKER}}
                 ),
             )
+    if coinbase_outage:
+        emit(OPEN + 650, kind="transport", stream="coinbase_ws", data={"event": "disconnected"})
     emit(CLOSE + 180000, json.dumps({"type": "trade", "msg": {"market_ticker": TICKER}}))
     emit(CLOSE + 180001, json.dumps({"type": "trade", "msg": {"market_ticker": TICKER}}))
     for stream in sorted({e["stream"] for e in envelopes}):
@@ -214,6 +216,19 @@ def test_quality_recovery_and_missing_book(tmp_path):
         receipts.close()
     run_once(cfg, rebuild=TICKER)
     assert json.loads(sidecar.read_text())["quality"] == "bad"
+
+
+def test_coinbase_transport_problems_do_not_downgrade_window(tmp_path):
+    cfg, _ = archive_fixture(tmp_path, coinbase_outage=True)
+    receipts = ReceiptStore(cfg.receipts_path)
+    try:
+        receipts._conn.execute("UPDATE batches SET status='pending' WHERE stream='coinbase_ws'")
+    finally:
+        receipts.close()
+    run_once(cfg, now_ms=CLOSE + 180001)
+    meta = json.loads(next(cfg.derived_root.rglob("*.window.json")).read_text())
+    assert meta["quality"] == "ok"
+    assert meta["gap_count"] == 0 and meta["reconnect_count"] == 0
 
 
 def test_index_only_acknowledged_verified_and_sentinel(tmp_path):

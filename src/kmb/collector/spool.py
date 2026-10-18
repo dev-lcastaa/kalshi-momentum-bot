@@ -9,7 +9,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from kmb.envelope import BatchMeta, make_batch_id, utc_now_iso
 
@@ -58,9 +58,18 @@ class Spool:
         cap_bytes: int = 5 * 1024**3,
         max_batch_bytes: int = 2 * 1024**2,
         max_age_seconds: int = 60,
+        defer_seal: bool = False,
+        shed_streams: frozenset[str] = frozenset(),
+        shed_fraction: float = 0.8,
     ) -> None:
         if cap_bytes <= 0 or max_batch_bytes <= 0 or max_age_seconds <= 0:
             raise ValueError("spool cap, batch size, and batch age must be positive")
+        # With defer_seal, full segments are only queued by append(); seal_ready() (run off the event loop)
+        # does the compression and fsyncs so a busy feed never stalls its own WebSocket keepalives.
+        self.defer_seal = defer_seal
+        # Auxiliary streams stop being accepted at shed_fraction of the cap so they never crowd out Kalshi.
+        self.shed_streams = shed_streams
+        self.shed_fraction = shed_fraction
         self.root = Path(root)
         self.capture_id = capture_id
         self.cap_bytes = cap_bytes
@@ -72,7 +81,10 @@ class Spool:
         for directory in (self.open_dir, self.batch_dir, self.rejected_dir):
             directory.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._seal_lock = threading.Lock()
         self._segments: dict[str, Segment] = {}
+        self._handles: dict[str, BinaryIO] = {}
+        self._ready: list[Segment] = []
         self._stream_next: dict[str, int] = {}
         self._batches: dict[str, PendingBatch] = {}
         self._used_cache = 0
@@ -95,16 +107,19 @@ class Spool:
             if segment and segment.size + len(line) > target_bytes:
                 self._seal(stream)
                 segment = None
-            if len(line) > target_bytes or self._used_bytes() + len(line) > self.cap_bytes:
+            limit = self.cap_bytes * self.shed_fraction if stream in self.shed_streams else self.cap_bytes
+            if len(line) > target_bytes or self._used_bytes() + len(line) > limit:
                 self.drop_count += 1
                 self._drop_unreported += 1
                 return False
             if segment is None:
-                segment = Segment(self.open_dir / f"{self.capture_id}.{stream}.jsonl")
+                segment = Segment(self.open_dir / f"{self.capture_id}.{stream}.{next_seq:012d}.jsonl")
                 self._segments[stream] = segment
-            with segment.path.open("ab") as handle:
-                handle.write(line)
-                handle.flush()
+            handle = self._handles.get(stream)
+            if handle is None:
+                handle = self._handles[stream] = segment.path.open("ab")
+            handle.write(line)
+            handle.flush()
             envelope["stream_seq"] = next_seq
             self._stream_next[stream] = next_seq + 1
             segment.events.append(stored_event)
@@ -129,6 +144,29 @@ class Spool:
         with self._lock:
             for stream in list(self._segments):
                 self._seal(stream)
+        self.seal_ready()
+
+    def seal_ready(self) -> int:
+        """Seal queued segments; safe to call from a worker thread. Returns the number sealed."""
+        with self._seal_lock:
+            return self._seal_ready_locked()
+
+    def _seal_ready_locked(self) -> int:
+        sealed = 0
+        while True:
+            with self._lock:
+                if not self._ready:
+                    return sealed
+                segment = self._ready[0]
+            # Compression and fsync run outside the lock so append() is never blocked behind them.
+            self._seal_events(segment.events)
+            with self._lock:
+                self._ready.remove(segment)
+                segment.path.unlink(missing_ok=True)
+                if self._cache_ready:
+                    self._used_cache = max(0, self._used_cache - segment.size)
+                _fsync_dir(self.open_dir)
+            sealed += 1
 
     def pending_batches(self) -> list[PendingBatch]:
         with self._lock:
@@ -193,7 +231,13 @@ class Spool:
 
     def _seal(self, stream: str) -> None:
         segment = self._segments.pop(stream, None)
+        handle = self._handles.pop(stream, None)
+        if handle is not None:
+            handle.close()
         if segment is None or not segment.events:
+            return
+        if self.defer_seal:
+            self._ready.append(segment)
             return
         try:
             self._seal_events(segment.events)
@@ -247,9 +291,10 @@ class Spool:
         os.replace(meta_tmp, meta_path)
         _fsync_dir(self.batch_dir)
         batch = PendingBatch(meta, data_path, meta_path)
-        self._batches[meta.batch_id] = batch
-        if self._cache_ready:
-            self._used_cache += data_path.stat().st_size + meta_path.stat().st_size
+        with self._lock:
+            self._batches[meta.batch_id] = batch
+            if self._cache_ready:
+                self._used_cache += data_path.stat().st_size + meta_path.stat().st_size
 
     def _rescan_batches(self) -> None:
         for data_path in self.batch_dir.glob("*.jsonl.gz"):

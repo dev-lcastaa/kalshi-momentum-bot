@@ -72,8 +72,16 @@ GapHandler = Callable[[int, int, int], bool]
 
 
 async def _default_connector(url: str, headers: dict[str, str]) -> WsConnection:
+    # A deep read queue keeps the socket reading (and answering pings) while the consumer works through
+    # bursts; the default of 16 messages pauses reads and trips "keepalive ping timeout" under load.
     return await websockets.connect(
-        url, additional_headers=headers, ping_interval=10, ping_timeout=10, max_size=None, close_timeout=5
+        url,
+        additional_headers=headers,
+        ping_interval=20,
+        ping_timeout=30,
+        max_size=None,
+        max_queue=16384,
+        close_timeout=5,
     )
 
 
