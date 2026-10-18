@@ -171,6 +171,45 @@ async def test_discovery_subscribes_open_and_near_future_only() -> None:
     assert feed.subscribed == {"KXBTC15M-next"}
 
 
+async def test_markets_subscription_is_created_lazily_and_never_emptied() -> None:
+    now = datetime.now(UTC)
+    opened = now + timedelta(minutes=10)
+    records = [
+        {
+            "ticker": "KXBTC15M-later",
+            "open_time": opened.isoformat(),
+            "close_time": (opened + timedelta(minutes=15)).isoformat(),
+        }
+    ]
+
+    class Ws:
+        def __init__(self) -> None:
+            self.subscriptions: dict = {}
+            self.created: list = []
+
+        async def subscribe(self, sub) -> None:
+            self.subscriptions[sub.key] = sub
+            self.created.append(sub)
+
+        async def remove_markets(self, key, tickers):
+            raise AssertionError("the last market must stay subscribed through a gap")
+
+    ws = Ws()
+    feed = KalshiFeed(None, ws, lambda envelope: None, series=("KXBTC15M",))
+    feed.markets = {record["ticker"]: record for record in records}
+
+    assert await feed.reconcile_subscriptions(now) == ([], [])
+    assert ws.created == []  # an empty tickers list would stream every market
+
+    added, _ = await feed.reconcile_subscriptions(opened - timedelta(seconds=10))
+    assert added == ["KXBTC15M-later"]
+    assert ws.created[0].market_tickers == ["KXBTC15M-later"]
+
+    # Long after it closes and with nothing else due, it is kept rather than emptying the subscription.
+    assert await feed.reconcile_subscriptions(opened + timedelta(hours=2)) == ([], [])
+    assert feed.subscribed == {"KXBTC15M-later"}
+
+
 def test_status_endpoints() -> None:
     app = create_status_app(lambda: {"capture_id": "x"}, lambda: True)
     with TestClient(app) as client:

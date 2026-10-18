@@ -24,6 +24,7 @@ Emit = Callable[[dict[str, Any]], None]
 # Recording windows start 60 s before open (envelope.windows.PRE_OPEN_MS); subscribing inside that span puts
 # each market's orderbook_snapshot in its own window.
 SUBSCRIBE_LEAD = timedelta(seconds=25)
+MARKET_CHANNELS = ["orderbook_delta", "ticker", "trade", "market_lifecycle_v2"]
 
 
 def _parse_time(value: Any) -> datetime | None:
@@ -122,22 +123,12 @@ class KalshiFeed:
             except Exception:
                 logger.exception("series metadata request failed for %s", series_ticker)
         ticker_list = sorted(self.subscribed)
-        # An empty ticker list would subscribe to every market on the exchange, so wait for a real one.
-        while not ticker_list and not self._stop.is_set():
-            logger.warning("no open Kalshi market to subscribe to yet; retrying discovery")
-            await asyncio.sleep(5)
-            try:
-                await self.discover()
-            except Exception:
-                logger.exception("Kalshi market discovery failed")
-            ticker_list = sorted(self.subscribed)
-        await self.ws.subscribe(
-            Subscription(
-                key="markets",
-                channels=["orderbook_delta", "ticker", "trade", "market_lifecycle_v2"],
-                market_tickers=ticker_list,
+        # Never create the markets subscription empty: without tickers Kalshi streams every market. It is
+        # created by reconcile_subscriptions() once a market is about to open.
+        if ticker_list and "markets" not in self.ws.subscriptions:
+            await self.ws.subscribe(
+                Subscription(key="markets", channels=MARKET_CHANNELS, market_tickers=ticker_list)
             )
-        )
         coin_indexes = []
         if any("BTC" in name for name in self.series):
             coin_indexes.append("BRTI")
@@ -231,15 +222,25 @@ class KalshiFeed:
             ):
                 desired.add(ticker)
         add = sorted(desired - self.subscribed)
-        remove = sorted(self.subscribed - desired)
+        # Keep the last market subscribed through a gap: an empty ticker list would stream every market.
+        remove = sorted(self.subscribed - desired) if desired else []
         if add:
-            try:
-                await self.ws.add_markets("markets", add)
-            except (KeyError, ConnectionError):
-                # Declarative subscriptions are replayed after reconnect.
-                sub = self.ws.subscriptions.get("markets")
-                if sub is not None:
-                    sub.market_tickers = sorted(set(sub.market_tickers or []) | set(add))
+            if "markets" not in self.ws.subscriptions:
+                await self.ws.subscribe(
+                    Subscription(
+                        key="markets",
+                        channels=MARKET_CHANNELS,
+                        market_tickers=sorted(self.subscribed | set(add)),
+                    )
+                )
+            else:
+                try:
+                    await self.ws.add_markets("markets", add)
+                except (KeyError, ConnectionError):
+                    # Declarative subscriptions are replayed after reconnect.
+                    sub = self.ws.subscriptions.get("markets")
+                    if sub is not None:
+                        sub.market_tickers = sorted(set(sub.market_tickers or []) | set(add))
             self.subscribed.update(add)
         if remove:
             try:
