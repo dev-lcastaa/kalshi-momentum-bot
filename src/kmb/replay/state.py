@@ -88,7 +88,7 @@ class Note:
 
 @dataclass
 class MarketState:
-    books: BookManager = field(default_factory=BookManager)
+    books: BookManager = field(default_factory=lambda: BookManager(strict_seq=False))
     markets: dict[str, MarketInfo] = field(default_factory=dict)
     tickers: dict[str, TickerInfo] = field(default_factory=dict)
     last_trade: dict[str, TradePrint] = field(default_factory=dict)

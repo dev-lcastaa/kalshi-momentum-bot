@@ -10,7 +10,7 @@ from kmb.strategy.base import Event
 
 def run_g2(events: Iterable[Event], *, event_window: int = 10, time_window_ms: int = 1000) -> dict:
     rows = list(events)
-    books = BookManager()
+    books = BookManager(strict_seq=False)
     pending = defaultdict(deque)
     matched: set[int] = set()
     mismatches: list[dict] = []

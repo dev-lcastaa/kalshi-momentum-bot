@@ -21,6 +21,9 @@ from kmb.kalshi.ws import KalshiWsClient, Subscription, WsFrame
 
 logger = logging.getLogger(__name__)
 Emit = Callable[[dict[str, Any]], None]
+# Recording windows start 60 s before open (envelope.windows.PRE_OPEN_MS); subscribing inside that span puts
+# each market's orderbook_snapshot in its own window.
+SUBSCRIBE_LEAD = timedelta(seconds=25)
 
 
 def _parse_time(value: Any) -> datetime | None:
@@ -119,6 +122,15 @@ class KalshiFeed:
             except Exception:
                 logger.exception("series metadata request failed for %s", series_ticker)
         ticker_list = sorted(self.subscribed)
+        # An empty ticker list would subscribe to every market on the exchange, so wait for a real one.
+        while not ticker_list and not self._stop.is_set():
+            logger.warning("no open Kalshi market to subscribe to yet; retrying discovery")
+            await asyncio.sleep(5)
+            try:
+                await self.discover()
+            except Exception:
+                logger.exception("Kalshi market discovery failed")
+            ticker_list = sorted(self.subscribed)
         await self.ws.subscribe(
             Subscription(
                 key="markets",
@@ -152,6 +164,17 @@ class KalshiFeed:
                     except Exception:
                         logger.exception("Kalshi market discovery failed")
                     next_discovery = time.monotonic() + self.discovery_interval
+                else:
+                    try:
+                        add, remove = await self.reconcile_subscriptions()
+                    except Exception:
+                        logger.exception("Kalshi subscription update failed")
+                    else:
+                        if add or remove:
+                            self.emit_control(
+                                "subscriptions",
+                                {"markets": sorted(self.subscribed), "added": add, "removed": remove},
+                            )
                 await self._snapshots_and_settlement()
                 try:
                     await asyncio.wait_for(self._stop.wait(), timeout=1)
@@ -170,7 +193,6 @@ class KalshiFeed:
         coins = tuple(name[2:-3] for name in self.series)
         found = await find_15min_markets(self.rest, coins=coins, statuses=("unopened", "open"))
         now = datetime.now(UTC)
-        desired: set[str] = set()
         for item in found:
             ticker = str(item.get("ticker", ""))
             if not ticker:
@@ -183,12 +205,31 @@ class KalshiFeed:
                 and market_open <= now + timedelta(minutes=35)
                 and (market_close is None or market_close >= now - timedelta(minutes=5))
             ):
-                desired.add(ticker)
-            if ticker in desired:
                 try:
                     self.markets[ticker] = _market_obj(await self.rest.get_market(ticker))
                 except Exception:
                     logger.exception("market metadata refresh failed for %s", ticker)
+        add, remove = await self.reconcile_subscriptions(now)
+        self.emit_control("discovery", {"markets": sorted(self.subscribed), "added": add, "removed": remove})
+
+    async def reconcile_subscriptions(self, now: datetime | None = None) -> tuple[list[str], list[str]]:
+        """Subscribe each market just before it opens so its book snapshot lands inside its recording window.
+
+        Subscribing early would put the only orderbook_snapshot minutes before the window starts, leaving
+        replays with deltas but no starting book.
+        """
+        now = now or datetime.now(UTC)
+        desired: set[str] = set()
+        for ticker, item in self.markets.items():
+            market = _market_obj(item)
+            market_open = _parse_time(market.get("open_time"))
+            market_close = _parse_time(market.get("close_time"))
+            if (
+                market_open
+                and market_open <= now + SUBSCRIBE_LEAD
+                and (market_close is None or market_close >= now - timedelta(minutes=5))
+            ):
+                desired.add(ticker)
         add = sorted(desired - self.subscribed)
         remove = sorted(self.subscribed - desired)
         if add:
@@ -206,7 +247,7 @@ class KalshiFeed:
             except (KeyError, ConnectionError):
                 pass
             self.subscribed.difference_update(remove)
-        self.emit_control("discovery", {"markets": sorted(desired), "added": add, "removed": remove})
+        return add, remove
 
     async def _snapshots_and_settlement(self) -> None:
         now = datetime.now(UTC)

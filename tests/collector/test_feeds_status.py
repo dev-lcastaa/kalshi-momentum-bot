@@ -161,8 +161,14 @@ async def test_discovery_subscribes_open_and_near_future_only() -> None:
     feed = KalshiFeed(Rest(), Ws(), emitted.append, series=("KXBTC15M",))
     feed.configure_capture(Sequencer(), "capture")
     await feed.discover()
-    assert feed.subscribed == {"KXBTC15M-open", "KXBTC15M-next"}
+    # Markets are subscribed only shortly before they open, so the far-future ones wait.
+    assert feed.subscribed == {"KXBTC15M-open"}
     assert emitted[0]["data"]["event"] == "discovery"
+
+    just_before_open = datetime.fromisoformat(records[2]["open_time"]) - timedelta(seconds=10)
+    added, removed = await feed.reconcile_subscriptions(just_before_open)
+    assert added == ["KXBTC15M-next"] and removed == ["KXBTC15M-open"]
+    assert feed.subscribed == {"KXBTC15M-next"}
 
 
 def test_status_endpoints() -> None:

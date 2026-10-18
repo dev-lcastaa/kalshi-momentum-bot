@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Iterable
 from decimal import Decimal
 
-from kmb.book import BookManager
+from kmb.book import BookManager, OrderBook
 from kmb.kalshi.messages import D
 from kmb.strategy.base import Event
 
@@ -35,9 +36,27 @@ def _bbo(book, msg) -> bool:
     return True
 
 
+HISTORY_MS = 10_000  # REST requests and ticker frames are compared against recent book states only
+TICKER_LAG_MS = 1_000  # a ticker frame describes the book slightly before the deltas that follow it
+
+
+def _states_during(states, sent: int, recv: int):
+    prior = None
+    for ts, state in states:
+        if ts < sent:
+            prior = (ts, state)
+        elif ts <= recv:
+            if prior is not None:
+                yield prior
+                prior = None
+            yield ts, state
+    if prior is not None:
+        yield prior
+
+
 def run_g1(events: Iterable[Event]) -> dict:
-    books = BookManager()
-    history: dict[str, list[tuple[int, dict]]] = {}
+    books = BookManager(strict_seq=False)
+    history: dict[str, deque[tuple[int, dict]]] = {}
     mismatches: list[dict] = []
     n_snapshots = n_exact = n_ticker = n_ticker_match = 0
     for ev in events:
@@ -48,13 +67,18 @@ def run_g1(events: Iterable[Event]) -> dict:
             ticker = msg.get("market_ticker") or ev.market_ticker
             if ticker and books.book(ticker).valid:
                 book = books.book(ticker)
-                history.setdefault(ticker, []).append(
-                    (ev.ts_ms, {"yes": dict(book.yes), "no": dict(book.no)})
-                )
+                states = history.setdefault(ticker, deque())
+                states.append((ev.ts_ms, {"yes": dict(book.yes), "no": dict(book.no)}))
+                while states and states[0][0] < ev.ts_ms - HISTORY_MS:
+                    states.popleft()
             if ev.msg_type == "ticker" and ticker:
                 n_ticker += 1
                 book = books.book(ticker)
-                if _bbo(book, msg):
+                if _bbo(book, msg) or any(
+                    ev.ts_ms - TICKER_LAG_MS <= ts <= ev.ts_ms
+                    and _bbo(OrderBook(ticker, state["yes"], state["no"]), msg)
+                    for ts, state in history.get(ticker, ())
+                ):
                     n_ticker_match += 1
                 else:
                     mismatches.append(
@@ -69,7 +93,7 @@ def run_g1(events: Iterable[Event]) -> dict:
         elif ev.stream == "kalshi_rest" and ev.msg_type == "rest.orderbook":
             n_snapshots += 1
             body = payload.get("response", payload)
-            meta = payload.get("_envelope_data", {})
+            meta = getattr(ev, "envelope_data", None) or payload.get("_envelope_data") or {}
             ticker = ev.market_ticker
             current = books.book(ticker) if ticker else None
             matched = bool(current and _snapshot(current, body))
@@ -79,9 +103,11 @@ def run_g1(events: Iterable[Event]) -> dict:
                 target = body.get("orderbook_fp", body.get("orderbook", body))
                 expected_yes = _levels(target.get("yes_dollars_fp", target.get("yes_dollars", [])))
                 expected_no = _levels(target.get("no_dollars_fp", target.get("no_dollars", [])))
+                # The response reflects the book at some instant in [sent, recv]: the state already in effect
+                # when the request was sent counts too, not only states created while it was in flight.
                 matched = any(
-                    sent <= ts <= recv and state["yes"] == expected_yes and state["no"] == expected_no
-                    for ts, state in history.get(ticker, [])
+                    state["yes"] == expected_yes and state["no"] == expected_no
+                    for ts, state in _states_during(history.get(ticker, ()), sent, recv)
                 )
             if matched:
                 n_exact += 1

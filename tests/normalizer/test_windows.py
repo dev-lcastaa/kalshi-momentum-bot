@@ -26,7 +26,9 @@ OPEN = 1767285900000
 CLOSE = OPEN + 900000
 
 
-def archive_fixture(root: Path, *, gap=False, recovered=True, ws_book=True, coinbase_outage=False):
+def archive_fixture(
+    root: Path, *, gap=False, recovered=True, ws_book=True, coinbase_outage=False, unseeded=False
+):
     archive = root / "archive"
     archive.mkdir()
     (archive / SENTINEL_NAME).write_text("test", encoding="utf-8")
@@ -60,9 +62,10 @@ def archive_fixture(root: Path, *, gap=False, recovered=True, ws_book=True, coin
     }
     emit(OPEN - 60000, json.dumps(market), stream="kalshi_rest", kind="rest", msg_type="rest.market")
     if ws_book:
+        kind_of_frame = "orderbook_delta" if unseeded else "orderbook_snapshot"
         emit(
             OPEN,
-            json.dumps({"type": "orderbook_snapshot", "sid": 1, "seq": 1, "msg": {"market_ticker": TICKER}}),
+            json.dumps({"type": kind_of_frame, "sid": 1, "seq": 1, "msg": {"market_ticker": TICKER}}),
         )
     else:
         book = {"orderbook_fp": {"yes_dollars": [["0.5000", "10"]], "no_dollars": [["0.4800", "10"]]}}
@@ -229,6 +232,13 @@ def test_coinbase_transport_problems_do_not_downgrade_window(tmp_path):
     meta = json.loads(next(cfg.derived_root.rglob("*.window.json")).read_text())
     assert meta["quality"] == "ok"
     assert meta["gap_count"] == 0 and meta["reconnect_count"] == 0
+
+
+def test_deltas_without_a_starting_snapshot_make_the_window_bad(tmp_path):
+    cfg, _ = archive_fixture(tmp_path, unseeded=True)
+    run_once(cfg, now_ms=CLOSE + 180001)
+    meta = json.loads(next(cfg.derived_root.rglob("*.window.json")).read_text())
+    assert meta["quality"] == "bad"
 
 
 def test_index_only_acknowledged_verified_and_sentinel(tmp_path):

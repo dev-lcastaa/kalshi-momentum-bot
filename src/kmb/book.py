@@ -131,9 +131,15 @@ class OrderBook:
 
 
 class BookManager:
-    """Books for many markets from one Kalshi WS connection's message stream."""
+    """Books for many markets from one Kalshi WS connection's message stream.
 
-    def __init__(self) -> None:
+    ``strict_seq`` tracks per-sid ``seq`` continuity (live use). Recorded windows only hold one market's
+    frames, so the other markets' messages that share the sid look like gaps; replays turn it off because the
+    normalizer already certifies continuity on the complete stream and reconnects arrive as transport events.
+    """
+
+    def __init__(self, strict_seq: bool = True) -> None:
+        self.strict_seq = strict_seq
         self.books: dict[str, OrderBook] = {}
         self._sid_seq: dict[int, int] = {}
         self._sid_tickers: dict[int, set[str]] = {}
@@ -170,7 +176,7 @@ class BookManager:
                 self._sid_seq[sid] = seq
             book.apply_snapshot(msg, seq, ts_ms)
             return ticker
-        if isinstance(sid, int) and isinstance(seq, int):
+        if self.strict_seq and isinstance(sid, int) and isinstance(seq, int):
             last = self._sid_seq.get(sid)
             self._sid_seq[sid] = seq
             if last is not None and seq != last + 1:

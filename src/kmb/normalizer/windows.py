@@ -141,8 +141,8 @@ def stream_holes(index: FileIndex, captures: set[str], open_ms: int, close_ms: i
 def quality(
     all_events: Iterable[dict], selected: Callable[[dict], bool], holes: bool, open_ms: int, close_ms: int
 ):
-    gaps, disconnects = 0, 0
-    last_seq, pending = {}, set()
+    gaps, disconnects, unseeded = 0, 0, 0
+    last_seq, pending, seeded = {}, set(), set()
     has_book = False
     for event in all_events:
         inside = open_ms <= event["recv_wall_ms"] <= close_ms
@@ -166,10 +166,18 @@ def quality(
             # Periodic REST snapshots cannot reconstruct a book between polls, so require the stream.
             if event["stream"] == "kalshi_ws" and msg in {"orderbook_snapshot", "orderbook_delta"}:
                 has_book = True
+                connection = (event["capture_id"], event.get("conn_id"))
+                if msg == "orderbook_snapshot":
+                    seeded.add(connection)
+                elif connection not in seeded:
+                    # Deltas without a starting snapshot in the window cannot be replayed into a book.
+                    unseeded += 1
             if msg in {"orderbook_snapshot", "rest.orderbook"}:
                 pending.discard((event["capture_id"], "kalshi_ws"))
                 pending.discard(key)
-    rating = "bad" if holes or not has_book or pending else "degraded" if gaps or disconnects else "ok"
+    rating = (
+        "bad" if holes or not has_book or pending or unseeded else "degraded" if gaps or disconnects else "ok"
+    )
     return rating, gaps, disconnects
 
 

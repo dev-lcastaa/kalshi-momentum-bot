@@ -88,7 +88,15 @@ in-memory event list for seeking, but decodes Parquet in batches.
 ```
 
 `quality`: `ok` (no gaps/holes/disconnects inside `[open_ms, close_ms]`), `degraded` (recovered gaps, i.e.
-a snapshot followed), `bad` (missing upload batches / stream_seq holes in range, or no book data).
+a snapshot followed, or a Kalshi WebSocket disconnect), `bad` (missing upload batches / stream_seq holes in
+range, no book data, or order-book deltas that arrive before any `orderbook_snapshot` on their connection).
+Only the Kalshi streams grade a window: Coinbase disconnects, upload failures and holes never change the
+rating, though the Coinbase frames are still stored in the window.
+
+Each market is subscribed ~25 s before it opens (inside the 60 s pre-open padding), so its
+`orderbook_snapshot` is in its own window. Windows hold only one market's frames, so the per-`sid` `seq` of
+that market's deltas is not contiguous; replays and fidelity checks therefore use
+`BookManager(strict_seq=False)` and rely on this `quality` rating for continuity.
 
 ## Data API (node001, read-only, port 8702)
 
