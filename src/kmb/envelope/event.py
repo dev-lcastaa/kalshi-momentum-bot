@@ -35,8 +35,18 @@ SOURCE_COINBASE = "coinbase"
 SOURCE_COLLECTOR = "collector"
 
 
+_iso_second_cache: tuple[int, str] = (-1, "")
+
+
 def ms_to_utc_iso(ms: int) -> str:
-    return datetime.fromtimestamp(ms / 1000, UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    # Called for every captured event; the per-second prefix is cached to keep this off the hot path.
+    global _iso_second_cache
+    second, remainder = divmod(ms, 1000)
+    cached_second, prefix = _iso_second_cache
+    if second != cached_second:
+        prefix = datetime.fromtimestamp(second, UTC).strftime("%Y-%m-%dT%H:%M:%S")
+        _iso_second_cache = (second, prefix)
+    return f"{prefix}.{remainder:03d}000Z"
 
 
 class Sequencer:

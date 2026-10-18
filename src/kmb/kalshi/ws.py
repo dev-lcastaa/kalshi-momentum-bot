@@ -235,19 +235,26 @@ class KalshiWsClient:
         self._emit({"event": "connected", "url": self._ws_url})
         reason = "closed"
         stop_task = asyncio.ensure_future(self._stop.wait())
+
+        async def read_forever() -> None:
+            # One long-lived reader instead of a task per frame: per-frame task churn was a large share of the
+            # capture process's CPU at ~1000 frames/s.
+            while True:
+                await self._handle_raw(await self._recv(ws))
+
+        reader: asyncio.Future[None] | None = None
         try:
             for sub in self._subs.values():
                 await self._send_subscribe(sub)
-            while True:
-                recv_task = asyncio.ensure_future(self._recv(ws))
-                done, _ = await asyncio.wait({recv_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
-                if stop_task in done:
-                    recv_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError, Exception):
-                        await recv_task
-                    reason = "stopped"
-                    return
-                await self._handle_raw(recv_task.result())
+            reader = asyncio.ensure_future(read_forever())
+            done, _ = await asyncio.wait({reader, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+            if stop_task in done:
+                reader.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await reader
+                reason = "stopped"
+                return
+            reader.result()
         except GapDetected:
             reason = "seq_gap"
             raise
@@ -256,6 +263,8 @@ class KalshiWsClient:
             raise
         finally:
             stop_task.cancel()
+            if reader is not None and not reader.done():
+                reader.cancel()
             self._ws = None
             self._connected.clear()
             for sub in self._subs.values():

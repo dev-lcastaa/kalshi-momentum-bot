@@ -173,7 +173,7 @@ def test_status_endpoints() -> None:
         assert client.get("/status").json() == {"capture_id": "x"}
 
 
-async def test_bus_publisher_uses_jetstream_with_fake_nats() -> None:
+async def test_bus_publisher_publishes_to_core_nats_and_configures_jetstream_capture() -> None:
     published = []
     configs = []
 
@@ -182,7 +182,7 @@ async def test_bus_publisher_uses_jetstream_with_fake_nats() -> None:
             configs.append(config)
 
         async def publish(self, subject: str, payload: bytes):
-            published.append((subject, json.loads(payload)))
+            raise AssertionError("per-message JetStream acks are too expensive for the capture process")
 
     class FakeNats:
         is_connected = True

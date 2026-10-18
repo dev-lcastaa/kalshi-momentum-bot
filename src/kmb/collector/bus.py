@@ -76,24 +76,29 @@ class NatsPublisher:
                 self._js_ok = self._js is not None
                 self.connected = True
                 delay = 1.0
+                handled = 0
                 while not self._stop.is_set() and self._nc.is_connected:
                     try:
-                        envelope = await asyncio.wait_for(self.queue.get(), timeout=0.5)
-                    except TimeoutError:
-                        continue
+                        envelope = self.queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        try:
+                            envelope = await asyncio.wait_for(self.queue.get(), timeout=0.5)
+                        except TimeoutError:
+                            continue
                     try:
                         payload = dumps(envelope).encode()
-                        subject = subject_for(envelope)
-                        if self._js_ok:
-                            await self._js.publish(subject, payload)
-                        else:
-                            await self._nc.publish(subject, payload)
+                        # Core publish: the MD JetStream stream still captures md.>, without waiting for an
+                        # ack per message (which cost far more CPU than the capture path itself).
+                        await self._nc.publish(subject_for(envelope), payload)
                         self.published += 1
                     except Exception:
                         self.dropped += 1
                         logger.warning("NATS publish failed; event dropped", exc_info=True)
                     finally:
                         self.queue.task_done()
+                    handled += 1
+                    if handled % 64 == 0:
+                        await asyncio.sleep(0)
             except asyncio.CancelledError:
                 raise
             except Exception:
