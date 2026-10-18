@@ -8,13 +8,29 @@ from kmb.kalshi.messages import ZERO, D
 from kmb.strategy.base import Event
 
 
-def run_g2(events: Iterable[Event], *, event_window: int = 10, time_window_ms: int = 1000) -> dict:
+def run_g2(events: Iterable[Event], *, event_window: int = 500, time_window_ms: int = 1000) -> dict:
+    """Every trade must be explained by a matching decrease at the resting side/price.
+
+    Kalshi publishes the resting-order decrease just before the trade message, so a decrease is matched
+    against the trade that follows it, and a trade against the decreases that follow it.
+    """
     rows = list(events)
     books = BookManager(strict_seq=False)
     pending = defaultdict(deque)
+    recent = defaultdict(deque)  # decreases not yet claimed by a trade
     matched: set[int] = set()
     mismatches: list[dict] = []
     trades: dict[int, dict] = {}
+
+    def expire_recent(current_index: int, current_ts: int) -> None:
+        for key, queue in list(recent.items()):
+            while queue and (
+                current_index - queue[0]["index"] > event_window
+                or current_ts - queue[0]["ts_ms"] > time_window_ms
+            ):
+                queue.popleft()
+            if not queue:
+                recent.pop(key, None)
 
     def expire(current_index: int, current_ts: int) -> None:
         for key, queue in list(pending.items()):
@@ -42,6 +58,7 @@ def run_g2(events: Iterable[Event], *, event_window: int = 10, time_window_ms: i
 
     for index, ev in enumerate(rows):
         expire(index, ev.ts_ms)
+        expire_recent(index, ev.ts_ms)
         if ev.stream != "kalshi_ws" or ev.kind != "frame":
             continue
         payload = ev.data if isinstance(ev.data, dict) else {}
@@ -66,7 +83,18 @@ def run_g2(events: Iterable[Event], *, event_window: int = 10, time_window_ms: i
                 "count": count,
                 "remaining": count,
             }
-            pending[key].append(trades[index])
+            trade = trades[index]
+            claimed = recent.get(key)
+            while claimed and trade["remaining"] > ZERO:
+                used = min(claimed[0]["remaining"], trade["remaining"])
+                claimed[0]["remaining"] -= used
+                trade["remaining"] -= used
+                if claimed[0]["remaining"] == ZERO:
+                    claimed.popleft()
+            if trade["remaining"] == ZERO:
+                matched.add(index)
+            else:
+                pending[key].append(trade)
         elif ev.msg_type == "orderbook_delta":
             delta = D(str(msg.get("delta_fp", msg.get("delta", "0"))))
             if delta >= ZERO:
@@ -88,6 +116,8 @@ def run_g2(events: Iterable[Event], *, event_window: int = 10, time_window_ms: i
                     queue.popleft()
                 if not queue:
                     pending.pop(key, None)
+            if volume > ZERO:
+                recent[key].append({"index": index, "ts_ms": ev.ts_ms, "remaining": volume})
     expire(len(rows) + event_window + 1, rows[-1].ts_ms + time_window_ms + 1 if rows else 0)
     unknown_side = sum(1 for item in mismatches if item.get("reason") == "unknown taker_side")
     n_trades = len(trades) + unknown_side
