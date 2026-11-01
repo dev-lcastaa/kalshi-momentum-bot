@@ -22,34 +22,39 @@ class Catalog:
         self._cache: dict[Path, tuple[tuple, dict]] = {}
         self._lock = threading.Lock()
 
+    def _load(self, path: Path) -> tuple[tuple, dict] | None:
+        try:
+            if not path.resolve().is_relative_to(self.root):
+                return None
+            stat = path.stat()
+            signature = (stat.st_mtime_ns, stat.st_size)
+            cached = self._cache.get(path)
+            meta = (
+                cached[1]
+                if cached and cached[0] == signature
+                else json.loads(path.read_text(encoding="utf-8"))
+            )
+            ticker = meta["window_id"]
+            if not isinstance(ticker, str) or not WINDOW_ID.fullmatch(ticker):
+                return None
+            date = datetime.fromisoformat(meta["open_time"]).astimezone(UTC).date().isoformat()
+            parquet_rel, json_rel = window_relpath(meta["series_ticker"], date, ticker)
+            if meta["parquet"] != parquet_rel or path.resolve() != under(self.root, json_rel):
+                return None
+            parquet = under(self.root, meta["parquet"])
+            if not parquet.is_file() or parquet.stat().st_size != meta["size_bytes"]:
+                return None
+            return signature, meta
+        except (OSError, ValueError, TypeError, KeyError):
+            return None
+
     def windows(self) -> list[dict]:
         with self._lock:
             current = {}
             for path in self.root.rglob("*.window.json"):
-                try:
-                    if not path.resolve().is_relative_to(self.root):
-                        continue
-                    stat = path.stat()
-                    signature = (stat.st_mtime_ns, stat.st_size)
-                    cached = self._cache.get(path)
-                    meta = (
-                        cached[1]
-                        if cached and cached[0] == signature
-                        else json.loads(path.read_text(encoding="utf-8"))
-                    )
-                    ticker = meta["window_id"]
-                    if not isinstance(ticker, str) or not WINDOW_ID.fullmatch(ticker):
-                        continue
-                    date = datetime.fromisoformat(meta["open_time"]).astimezone(UTC).date().isoformat()
-                    parquet_rel, json_rel = window_relpath(meta["series_ticker"], date, ticker)
-                    if meta["parquet"] != parquet_rel or path.resolve() != under(self.root, json_rel):
-                        continue
-                    parquet = under(self.root, meta["parquet"])
-                    if not parquet.is_file() or parquet.stat().st_size != meta["size_bytes"]:
-                        continue
-                    current[path] = (signature, meta)
-                except (OSError, ValueError, TypeError, KeyError):
-                    continue
+                loaded = self._load(path)
+                if loaded is not None:
+                    current[path] = loaded
             self._cache = current
             return sorted(
                 (item[1] for item in current.values()),
@@ -60,9 +65,12 @@ class Catalog:
     def get(self, window_id: str) -> dict:
         if not WINDOW_ID.fullmatch(window_id):
             raise HTTPException(400, "invalid window_id")
-        for meta in self.windows():
-            if meta["window_id"] == window_id:
-                return meta
+        # Look only at the per-date sidecars for this id instead of rescanning the whole catalog.
+        with self._lock:
+            for path in sorted(self.root.glob(f"windows/*/*/{window_id}.window.json")):
+                loaded = self._load(path)
+                if loaded is not None and loaded[1]["window_id"] == window_id:
+                    return loaded[1]
         raise HTTPException(404, "window not found")
 
 

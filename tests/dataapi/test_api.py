@@ -41,3 +41,19 @@ def test_api_auth_catalog_ranges_traversal_and_refresh(tmp_path):
     assert client.get("/v1/windows", headers=auth).json() == []
     sidecar.unlink()
     assert client.get("/health").json()["windows"] == 0
+
+
+def test_single_window_lookup_does_not_rescan_catalog(tmp_path, monkeypatch):
+    cfg, _ = archive_fixture(tmp_path)
+    run_once(cfg, now_ms=CLOSE + 180001)
+    app = create_app(cfg.derived_root, "test-token")
+    client = TestClient(app)
+    auth = {"Authorization": "Bearer test-token"}
+
+    def fail():
+        raise AssertionError("catalog was fully rescanned")
+
+    monkeypatch.setattr(app.state.catalog, "windows", fail)
+    assert client.get(f"/v1/windows/{TICKER}", headers=auth).json()["window_id"] == TICKER
+    assert client.get("/v1/windows/UNKNOWN", headers=auth).status_code == 404
+    assert client.get(f"/v1/windows/{TICKER}/parquet", headers=auth).content[:4] == b"PAR1"
