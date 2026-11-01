@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -13,7 +14,7 @@ from tests.normalizer.test_windows import CLOSE, TICKER, archive_fixture
 def test_api_auth_catalog_ranges_traversal_and_refresh(tmp_path):
     cfg, _ = archive_fixture(tmp_path)
     run_once(cfg, now_ms=CLOSE + 180001)
-    client = TestClient(create_app(cfg.derived_root, "test-token"))
+    client = TestClient(create_app(cfg.derived_root, "test-token", catalog_ttl_s=0))
     auth = {"Authorization": "Bearer test-token"}
     assert client.get("/health").json() == {"ok": True, "windows": 1}
     assert client.get("/v1/windows").status_code == 401
@@ -66,10 +67,48 @@ def test_warm_catalog_scan_skips_revalidation_but_still_detects_changes(tmp_path
     assert catalog.windows() == []
 
 
+def test_cached_catalog_serves_snapshot_and_refreshes_in_background(tmp_path, monkeypatch):
+    cfg, _ = archive_fixture(tmp_path)
+    run_once(cfg, now_ms=CLOSE + 180001)
+    catalog = Catalog(cfg.derived_root, ttl_s=60)
+
+    def fail():
+        raise AssertionError("scan ran before the snapshot was warm")
+
+    monkeypatch.setattr(catalog, "_scan", fail)
+    assert catalog.count() == 0
+    monkeypatch.undo()
+
+    assert len(catalog.windows()) == 1
+    next(cfg.derived_root.rglob("*.parquet")).unlink()
+    assert len(catalog.windows()) == 1 and catalog.count() == 1
+    assert catalog.refresh() == []
+
+    stale = Catalog(cfg.derived_root, ttl_s=0.001)
+    assert stale.windows() == []
+    stale._snapshot = [{"window_id": "STALE"}]
+    time.sleep(0.01)
+    assert stale.windows() == [{"window_id": "STALE"}]
+    deadline = time.monotonic() + 5
+    while stale.windows() != [] and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert stale.windows() == []
+
+
+def test_health_does_not_wait_for_catalog_scan(tmp_path):
+    cfg, _ = archive_fixture(tmp_path)
+    run_once(cfg, now_ms=CLOSE + 180001)
+    client = TestClient(create_app(cfg.derived_root, "test-token", catalog_ttl_s=60))
+    deadline = time.monotonic() + 5
+    while client.get("/health").json()["windows"] != 1 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert client.get("/health").json() == {"ok": True, "windows": 1}
+
+
 def test_single_window_lookup_does_not_rescan_catalog(tmp_path, monkeypatch):
     cfg, _ = archive_fixture(tmp_path)
     run_once(cfg, now_ms=CLOSE + 180001)
-    app = create_app(cfg.derived_root, "test-token")
+    app = create_app(cfg.derived_root, "test-token", catalog_ttl_s=0)
     client = TestClient(app)
     auth = {"Authorization": "Bearer test-token"}
 

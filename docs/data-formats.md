@@ -108,3 +108,8 @@ Bearer token from `/etc/kmb/secrets/data_api_token` (header `Authorization: Bear
 | GET | `/v1/windows?series=&from=<iso>&to=<iso>&limit=100` | `[window.json]` newest first |
 | GET | `/v1/windows/{window_id}` | `window.json` |
 | GET | `/v1/windows/{window_id}/parquet` | file bytes, `ETag: "<sha256>"` |
+
+The window list is served from a cached snapshot (refreshed in the background once it is older than
+`KMB_DATAAPI_CATALOG_TTL_S`, default 30 s; `0` rescans on every request), so a new window can appear up to that
+long after the normalizer writes it. `/health` never waits for a scan and reports `windows: 0` until the first
+scan after startup completes. `/v1/windows/{window_id}` always reads the sidecar directly.

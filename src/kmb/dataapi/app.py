@@ -6,6 +6,7 @@ import json
 import os
 import secrets
 import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from stat import S_ISREG
@@ -18,10 +19,17 @@ from kmb.normalizer.index import WINDOW_ID, under
 
 
 class Catalog:
-    def __init__(self, root: Path):
+    """Window catalog. ``ttl_s > 0`` serves a cached snapshot and refreshes it in the background."""
+
+    def __init__(self, root: Path, ttl_s: float = 0.0):
         self.root = root.resolve()
+        self.ttl_s = ttl_s
         self._cache: dict[Path, tuple[tuple, dict, Path]] = {}
+        self._snapshot: list[dict] | None = None
+        self._snapshot_at = 0.0
         self._lock = threading.Lock()
+        self._state = threading.Lock()
+        self._refreshing = False
 
     def _load(self, path: Path) -> tuple[tuple, dict, Path] | None:
         try:
@@ -51,33 +59,68 @@ class Catalog:
         except (OSError, ValueError, TypeError, KeyError):
             return None
 
-    def windows(self) -> list[dict]:
+    def _scan(self) -> list[dict]:
+        started = time.monotonic()
+        current = {}
+        for path in self.root.rglob("*.window.json"):
+            loaded = self._load(path)
+            if loaded is not None:
+                current[path] = loaded
+        self._cache = current
+        snapshot = sorted(
+            (item[1] for item in current.values()),
+            key=lambda m: (m["open_ms"], m["window_id"]),
+            reverse=True,
+        )
+        self._snapshot, self._snapshot_at = snapshot, started
+        return snapshot
+
+    def refresh(self) -> list[dict]:
         with self._lock:
-            current = {}
-            for path in self.root.rglob("*.window.json"):
-                loaded = self._load(path)
-                if loaded is not None:
-                    current[path] = loaded
-            self._cache = current
-            return sorted(
-                (item[1] for item in current.values()),
-                key=lambda m: (m["open_ms"], m["window_id"]),
-                reverse=True,
-            )
+            return self._scan()
+
+    def _refresh_in_background(self) -> None:
+        try:
+            self.refresh()
+        finally:
+            with self._state:
+                self._refreshing = False
+
+    def windows(self) -> list[dict]:
+        if self.ttl_s <= 0:
+            return self.refresh()
+        snapshot = self._snapshot
+        if snapshot is None:
+            with self._lock:
+                return self._snapshot if self._snapshot is not None else self._scan()
+        with self._state:
+            stale = time.monotonic() - self._snapshot_at >= self.ttl_s
+            start = stale and not self._refreshing
+            self._refreshing = self._refreshing or start
+        if start:
+            threading.Thread(target=self._refresh_in_background, daemon=True).start()
+        return snapshot
+
+    def count(self) -> int:
+        """Window count without ever waiting on a scan once caching is enabled."""
+        if self.ttl_s > 0 and self._snapshot is None:
+            return 0
+        return len(self.windows())
 
     def get(self, window_id: str) -> dict:
         if not WINDOW_ID.fullmatch(window_id):
             raise HTTPException(400, "invalid window_id")
         # Look only at the per-date sidecars for this id instead of rescanning the whole catalog.
-        with self._lock:
-            for path in sorted(self.root.glob(f"windows/*/*/{window_id}.window.json")):
-                loaded = self._load(path)
-                if loaded is not None and loaded[1]["window_id"] == window_id:
-                    return loaded[1]
+        for path in sorted(self.root.glob(f"windows/*/*/{window_id}.window.json")):
+            loaded = self._load(path)
+            if loaded is not None and loaded[1]["window_id"] == window_id:
+                return loaded[1]
         raise HTTPException(404, "window not found")
 
 
-def create_app(root: Path | None = None, token: str | None = None) -> FastAPI:
+def create_app(
+    root: Path | None = None, token: str | None = None, catalog_ttl_s: float | None = None
+) -> FastAPI:
     root = root or Path(os.getenv("KMB_DATAAPI_DERIVED_ROOT", "/mnt/storage1/kalshi-derived"))
     if token is None:
         token = (
@@ -87,7 +130,11 @@ def create_app(root: Path | None = None, token: str | None = None) -> FastAPI:
         )
     if not token:
         raise ValueError("data API token cannot be empty")
-    catalog = Catalog(root)
+    if catalog_ttl_s is None:
+        catalog_ttl_s = float(os.getenv("KMB_DATAAPI_CATALOG_TTL_S", "30"))
+    catalog = Catalog(root, catalog_ttl_s)
+    if catalog_ttl_s > 0:
+        threading.Thread(target=catalog.refresh, daemon=True).start()
     app = FastAPI(title="KMB replay data API", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.catalog = catalog
 
@@ -99,7 +146,7 @@ def create_app(root: Path | None = None, token: str | None = None) -> FastAPI:
     @app.get("/health")
     def health():
         ok = root.is_dir()
-        return JSONResponse({"ok": ok, "windows": len(catalog.windows())}, status_code=200 if ok else 503)
+        return JSONResponse({"ok": ok, "windows": catalog.count()}, status_code=200 if ok else 503)
 
     @app.get("/v1/windows", dependencies=[Depends(authorize)])
     def list_windows(
