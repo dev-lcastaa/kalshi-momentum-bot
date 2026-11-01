@@ -8,6 +8,7 @@ import secrets
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
+from stat import S_ISREG
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from starlette.responses import FileResponse, JSONResponse, Response
@@ -19,21 +20,23 @@ from kmb.normalizer.index import WINDOW_ID, under
 class Catalog:
     def __init__(self, root: Path):
         self.root = root.resolve()
-        self._cache: dict[Path, tuple[tuple, dict]] = {}
+        self._cache: dict[Path, tuple[tuple, dict, Path]] = {}
         self._lock = threading.Lock()
 
-    def _load(self, path: Path) -> tuple[tuple, dict] | None:
+    def _load(self, path: Path) -> tuple[tuple, dict, Path] | None:
         try:
-            if not path.resolve().is_relative_to(self.root):
-                return None
             stat = path.stat()
             signature = (stat.st_mtime_ns, stat.st_size)
             cached = self._cache.get(path)
-            meta = (
-                cached[1]
-                if cached and cached[0] == signature
-                else json.loads(path.read_text(encoding="utf-8"))
-            )
+            if cached and cached[0] == signature:
+                # Unchanged sidecar was fully validated before; only confirm the parquet is still intact.
+                parquet_stat = cached[2].stat()
+                if S_ISREG(parquet_stat.st_mode) and parquet_stat.st_size == cached[1]["size_bytes"]:
+                    return cached
+                return None
+            if not path.resolve().is_relative_to(self.root):
+                return None
+            meta = json.loads(path.read_text(encoding="utf-8"))
             ticker = meta["window_id"]
             if not isinstance(ticker, str) or not WINDOW_ID.fullmatch(ticker):
                 return None
@@ -44,7 +47,7 @@ class Catalog:
             parquet = under(self.root, meta["parquet"])
             if not parquet.is_file() or parquet.stat().st_size != meta["size_bytes"]:
                 return None
-            return signature, meta
+            return signature, meta, parquet
         except (OSError, ValueError, TypeError, KeyError):
             return None
 

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from kmb.dataapi.app import create_app
+from kmb.dataapi.app import Catalog, create_app
 from kmb.normalizer.windows import run_once
 from tests.normalizer.test_windows import CLOSE, TICKER, archive_fixture
 
@@ -41,6 +42,28 @@ def test_api_auth_catalog_ranges_traversal_and_refresh(tmp_path):
     assert client.get("/v1/windows", headers=auth).json() == []
     sidecar.unlink()
     assert client.get("/health").json()["windows"] == 0
+
+
+def test_warm_catalog_scan_skips_revalidation_but_still_detects_changes(tmp_path, monkeypatch):
+    cfg, _ = archive_fixture(tmp_path)
+    run_once(cfg, now_ms=CLOSE + 180001)
+    catalog = Catalog(cfg.derived_root)
+    assert len(catalog.windows()) == 1
+
+    def fail(*args, **kwargs):
+        raise AssertionError("warm scan revalidated an unchanged window")
+
+    monkeypatch.setattr(Path, "resolve", fail)
+    monkeypatch.setattr(json, "loads", fail)
+    assert len(catalog.windows()) == 1
+    assert catalog.get(TICKER)["window_id"] == TICKER
+    monkeypatch.undo()
+
+    parquet = next(cfg.derived_root.rglob("*.parquet"))
+    parquet.write_bytes(parquet.read_bytes()[:-1])
+    assert catalog.windows() == []
+    parquet.unlink()
+    assert catalog.windows() == []
 
 
 def test_single_window_lookup_does_not_rescan_catalog(tmp_path, monkeypatch):
