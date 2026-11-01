@@ -27,6 +27,7 @@ class Catalog:
         self._cache: dict[Path, tuple[tuple, dict, Path]] = {}
         self._snapshot: list[dict] | None = None
         self._snapshot_at = 0.0
+        self._by_id: dict[str, dict] = {}
         self._lock = threading.Lock()
         self._state = threading.Lock()
         self._refreshing = False
@@ -73,6 +74,7 @@ class Catalog:
             reverse=True,
         )
         self._snapshot, self._snapshot_at = snapshot, started
+        self._by_id = {m["window_id"]: m for m in snapshot}
         return snapshot
 
     def refresh(self) -> list[dict]:
@@ -110,7 +112,9 @@ class Catalog:
     def get(self, window_id: str) -> dict:
         if not WINDOW_ID.fullmatch(window_id):
             raise HTTPException(400, "invalid window_id")
-        # Look only at the per-date sidecars for this id instead of rescanning the whole catalog.
+        if self.ttl_s > 0 and window_id in self._by_id:
+            return self._by_id[window_id]
+        # Not in the snapshot (or caching is off): read just this window's sidecar instead of rescanning.
         for path in sorted(self.root.glob(f"windows/*/*/{window_id}.window.json")):
             loaded = self._load(path)
             if loaded is not None and loaded[1]["window_id"] == window_id:

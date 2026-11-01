@@ -80,6 +80,16 @@ def test_cached_catalog_serves_snapshot_and_refreshes_in_background(tmp_path, mo
     monkeypatch.undo()
 
     assert len(catalog.windows()) == 1
+    assert catalog.get(TICKER)["window_id"] == TICKER
+
+    def fail(*args, **kwargs):
+        raise AssertionError("snapshot lookup touched the filesystem")
+
+    monkeypatch.setattr(Path, "glob", fail)
+    monkeypatch.setattr(catalog, "_load", fail)
+    assert catalog.get(TICKER)["window_id"] == TICKER
+    monkeypatch.undo()
+
     next(cfg.derived_root.rglob("*.parquet")).unlink()
     assert len(catalog.windows()) == 1 and catalog.count() == 1
     assert catalog.refresh() == []
